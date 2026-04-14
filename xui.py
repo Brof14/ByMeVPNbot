@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 2
 _RETRY_DELAY = 0.5
 _TIMEOUT = 8.0
+_MAX_KEEPALIVE = 20
+_MAX_CONNECTIONS = 100
 
 # Global session for connection pooling
 _session: Optional[httpx.AsyncClient] = None
@@ -97,8 +99,8 @@ async def get_session() -> httpx.AsyncClient:
             timeout=_TIMEOUT,
             follow_redirects=True,
             limits=httpx.Limits(
-                max_keepalive_connections=XUI_CONFIG['max_keepalive_connections'], 
-                max_connections=XUI_CONFIG['max_connections']
+                max_keepalive_connections=_MAX_KEEPALIVE, 
+                max_connections=_MAX_CONNECTIONS
             )
         )
     return _session
