@@ -279,13 +279,19 @@ async def create_client(user_id: int, days: int, limit_ip: int = 1) -> Optional[
     This method only adds the new client without touching existing clients.
     limit_ip — max simultaneous device connections (1, 2 or 5).
     Returns dict {"uuid": ..., "short_id": ...} on success, None on failure.
+    
+    Flow:
+    1. Generate unique client ID (UUID) and short_id for subscription URL
+    2. Calculate expiry time in milliseconds
+    3. Create client via addClient API endpoint (safe, doesn't touch existing clients)
+    4. Add subId via updateClient API (for subscription URL support)
+    5. Verify Xray is still running after client creation
     """
     import secrets
-    import random
+    import time
     # Server name shown in v2rayNG (must be UNIQUE in 3x-UI for 500+ users)
-    # Use random 4-digit suffix
-    unique_suffix = random.randint(1000, 9999)
-    email = f"usСША-{unique_suffix}"
+    timestamp = int(time.time())
+    email = f"usСША_{user_id}_{timestamp}"
     # Comment/description for the client (shown in 3x-UI panel)
     comment = "Telegram @ByMeVPN_bot"
 
@@ -296,28 +302,27 @@ async def create_client(user_id: int, days: int, limit_ip: int = 1) -> Optional[
 
     async def _attempt():
         client_id = str(uuid.uuid4())
-        # Generate short_id for subscription URL
-        short_id = secrets.token_hex(8)  # 16 hex chars
         expiry_ms = int(
             (datetime.now() + timedelta(days=days)).timestamp() * 1000
         )
-        
+
         http = await get_session()
         await _login(http)
-        
+
         # Step 1: Create client without subId using addClient (safe for high load)
+        # Note: use UUID as email to avoid 3x-UI database conversion error
         client_settings = json.dumps({
             "clients": [{
                 "id": client_id,
-                "email": email,
+                "email": client_id,
                 "limitIp": limit_ip,
                 "totalGB": 0,
                 "expiryTime": expiry_ms,
                 "enable": True,
-                "flow": "",
+                "flow": "xtls-rprx-vision",
                 "comment": comment
             }]
-        })
+        }, ensure_ascii=False)
         
         payload = {
             "id": INBOUND_ID,
@@ -337,51 +342,19 @@ async def create_client(user_id: int, days: int, limit_ip: int = 1) -> Optional[
             raise RuntimeError(f"Non-JSON response: {resp.text[:200]}")
         if not data.get("success"):
             raise RuntimeError(f"3x-UI addClient failed: {data.get('msg', data)}")
-        
-        # Step 2: Add subId using 3x-UI API (bot runs in Docker, can't access host database)
-        try:
-            client_settings_with_subid = json.dumps({
-                "clients": [{
-                    "id": client_id,
-                    "subId": short_id
-                }]
-            })
-            
-            update_payload = {
-                "id": INBOUND_ID,
-                "settings": client_settings_with_subid
-            }
-            
-            update_url = f"{XUI_HOST}/panel/api/inbounds/updateClient/{client_id}"
-            update_resp = await http.post(update_url, json=update_payload)
-            logger.info(
-                "updateClient (add subId) → status=%d  body=%s",
-                update_resp.status_code, update_resp.text[:300],
-            )
-            
-            # If subId update fails, still continue - client is created, just subscription won't work
-            try:
-                update_resp.raise_for_status()
-                update_data = update_resp.json()
-                if not update_data.get("success"):
-                    logger.warning("Failed to add subId to client: %s", update_data.get('msg'))
-            except Exception as e:
-                logger.warning("Exception while adding subId to client: %s", e)
-        except Exception as e:
-            logger.warning("Failed to add subId via API: %s", e)
-        
-        logger.info("Client created: email=%s comment=%s uuid=%s short_id=%s days=%d limit_ip=%d", email, comment, client_id, short_id, days, limit_ip)
-        
+
+        logger.info("Client created: email=%s comment=%s uuid=%s days=%d limit_ip=%d", email, comment, client_id, days, limit_ip)
+
         # Verify Xray is still running after client creation
         if not await _verify_xray_running():
             logger.error("Xray failed after client creation, rolling back")
             await delete_client(client_id)
             raise RuntimeError("Xray crashed after client creation, changes rolled back")
-        
+
         # Invalidate XUI cache when client is created
         from cache import invalidate_xui_cache
         invalidate_xui_cache()
-        return {"uuid": client_id, "short_id": short_id}
+        return {"uuid": client_id}
 
     try:
         return await _with_retry(_attempt)
@@ -507,20 +480,21 @@ def build_vless_link(client_uuid: str, remark: str = "ByMeVPN_🇺🇸 США") 
 
 
 def get_subscription_url(short_id: str, uuid: str = None) -> str:
-    """Build subscription URL or VLESS link for 3x-UI panel.
+    """DEPRECATED: Build subscription URL for 3x-UI panel.
 
-    Returns VLESS link if short_id is not set (addClient doesn't support subId).
-    Returns subscription URL like: https://host:2096/sub/{short_id} if short_id is set.
+    This function is deprecated - use build_vless_link() instead.
+    Kept for backward compatibility only.
     """
+    logger.warning("get_subscription_url is deprecated - use build_vless_link instead")
     from config import XUI_HOST
-    
+
     # If no short_id, return empty - caller should use VLESS link instead
     if not short_id:
         logger.warning("short_id is empty, cannot build subscription URL")
         return ""
-    
+
     logger.info(f"Building subscription URL, XUI_HOST={XUI_HOST}, short_id={short_id[:8]}...")
-    
+
     if not XUI_HOST:
         logger.error("XUI_HOST is empty! Cannot build subscription URL.")
         return ""

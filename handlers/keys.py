@@ -8,7 +8,7 @@ from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
 from database import get_user_keys, get_key_by_id, delete_key_by_id
-from xui import delete_client, get_subscription_url
+from xui import delete_client, build_vless_link
 from keyboards import my_keys_kb, my_keys_list_kb, key_detail_kb, confirm_delete_kb, payment_kb, back_to_menu, connection_guide_kb
 from utils import send_with_photo, send_or_edit, safe_answer
 from constants import format_timestamp as fmt_date, format_days_left as fmt_days_left
@@ -108,13 +108,17 @@ async def cb_key_info(callback: CallbackQuery, bot: Bot):
     status = "✅ активен" if k["expiry"] > now else "❌ истёк"
     devices = k.get("limit_ip", 1)
     device_label = f"{devices} устройств" if devices > 1 else f"{devices} устройство"
+    # Get VLESS link from existing key or rebuild from UUID
+    vless_link = k.get('key', '')
+    if not vless_link and k.get('uuid'):
+        vless_link = build_vless_link(k.get('uuid'), remark=k.get('remark', f"Key #{k['id']}"))
     text = (
         f"🔑 <b>{k.get('remark') or 'Ключ #' + str(k['id'])}</b>\n\n"
         f"Статус: {status}\n"
         f"Устройств: {device_label}\n"
         f"Действует до: {fmt_date(k['expiry'])}\n"
         f"Осталось: {fmt_days_left(k['expiry'])}\n\n"
-        f"Ваш ключ:\n<code>{get_subscription_url(k['short_id']) if k.get('short_id') else k['key']}</code>"
+        f"Ваш ключ:\n<code>{vless_link}</code>"
     )
 
     keys = await get_user_keys(callback.from_user.id)
@@ -144,17 +148,18 @@ async def cb_key_instructions(callback: CallbackQuery, bot: Bot):
         await callback.message.answer("Ключ не найден.", reply_markup=back_to_menu())
         return
     
-    sub_url = get_subscription_url(key['short_id']) if key.get('short_id') else key['key']
-    
-    # Store subscription URL in context for guide pages
-    from aiogram.fsm.context import FSMContext
+    # Get VLESS link from existing key or rebuild from UUID
+    vless_link = key.get('key', '')
+    if not vless_link and key.get('uuid'):
+        vless_link = build_vless_link(key.get('uuid'), remark=key.get('remark', f"Key #{key_id}"))
+
     # Show device selection guide
     from keyboards import connection_guide_kb
-    
+
     text = (
         f"📋 <b>Инструкция подключения</b>\n\n"
         f"🔑 <b>Ключ #{key_id}</b>\n"
-        f"🔗 <code>{sub_url}</code>\n\n"
+        f"🔗 <code>{vless_link}</code>\n\n"
         f"<b>Выберите ваше устройство:</b>"
     )
     

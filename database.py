@@ -177,6 +177,19 @@ CREATE TABLE IF NOT EXISTS promo_code_uses (
 );
 CREATE INDEX IF NOT EXISTS idx_promo_uses_code ON promo_code_uses(code);
 CREATE INDEX IF NOT EXISTS idx_promo_uses_user ON promo_code_uses(user_id);
+
+-- Key issuance error logging for admin panel tracking
+CREATE TABLE IF NOT EXISTS key_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT,
+    context TEXT,
+    created INTEGER DEFAULT (strftime('%s','now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_key_errors_user ON key_errors(user_id);
+CREATE INDEX IF NOT EXISTS idx_key_errors_created ON key_errors(created);
 """
 
 
@@ -514,14 +527,13 @@ async def add_key(
     uuid: str,
     days: int,
     limit_ip: int = 1,
-    short_id: str = None,
 ) -> int:
     db = await get_db()
     expiry = int(time.time()) + days * 86400
     cur = await db.execute(
-        "INSERT INTO keys(user_id, key, remark, uuid, short_id, days, limit_ip, created, expiry) "
-        "VALUES(?,?,?,?,?,?,?,?,?)",
-        (user_id, key, remark, uuid, short_id, days, limit_ip, int(time.time()), expiry),
+        "INSERT INTO keys(user_id, key, remark, uuid, days, limit_ip, created, expiry) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (user_id, key, remark, uuid, days, limit_ip, int(time.time()), expiry),
     )
     await db.commit()
     from cache import invalidate_user_cache, invalidate_subscription_cache
@@ -903,7 +915,6 @@ async def get_user_refunds(user_id: int) -> list[dict]:
 # Referral functions - using direct implementations
 # Trial functions - using direct implementations
 @cache_user_info
-@cache_user_info
 async def has_active_subscription(user_id: int) -> bool:
     """Check if user has any non-expired key."""
     db = await get_db()
@@ -916,7 +927,6 @@ async def has_active_subscription(user_id: int) -> bool:
     return count > 0
 
 
-@cache_user_info
 @cache_user_info
 async def has_ever_had_key(user_id: int) -> bool:
     """Check if user ever had any key (including expired)."""
@@ -970,7 +980,7 @@ async def get_referral_stats(referrer_id: int) -> dict:
         SELECT COUNT(DISTINCT referred_id) FROM referral_events 
         WHERE referrer_id=? AND event_type='payment_bonus'
         """,
-        (referrer_id,)
+        (referrer_id)
     )
     paid = (await cur.fetchone())[0]
     
@@ -2040,6 +2050,86 @@ async def get_all_keys_csv() -> str:
         lines.append(f"{key_id},{user_id},\"{remark}\",{uuid},{short_id},{days},{limit_ip},{created},{expiry},{is_active},{total_paid}")
     
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Key Error Logging
+# ---------------------------------------------------------------------------
+
+async def log_key_error(
+    user_id: int,
+    error_type: str,
+    error_message: str = None,
+    context: dict = None
+) -> int:
+    """Log key issuance error for admin panel tracking."""
+    import json
+    db = await get_db()
+    context_json = json.dumps(context) if context else None
+    cur = await db.execute(
+        "INSERT INTO key_errors(user_id, error_type, error_message, context) VALUES(?,?,?,?)",
+        (user_id, error_type, error_message, context_json)
+    )
+    await db.commit()
+    return cur.lastrowid
+
+
+async def get_key_errors(limit: int = 50, offset: int = 0) -> list[dict]:
+    """Get key issuance errors with pagination."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, user_id, error_type, error_message, context, created "
+        "FROM key_errors ORDER BY created DESC LIMIT ? OFFSET ?",
+        (limit, offset)
+    )
+    rows = await cur.fetchall()
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "error_type": row[2],
+            "error_message": row[3],
+            "context": row[4],
+            "created": row[5],
+        }
+        for row in rows
+    ]
+
+
+async def get_user_key_errors(user_id: int) -> list[dict]:
+    """Get key errors for a specific user."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id, error_type, error_message, context, created "
+        "FROM key_errors WHERE user_id=? ORDER BY created DESC",
+        (user_id,)
+    )
+    rows = await cur.fetchall()
+    return [
+        {
+            "id": row[0],
+            "error_type": row[1],
+            "error_message": row[2],
+            "context": row[3],
+            "created": row[4],
+        }
+        for row in rows
+    ]
+
+
+async def get_key_errors_count() -> int:
+    """Get total count of key errors."""
+    db = await get_db()
+    cur = await db.execute("SELECT COUNT(*) FROM key_errors")
+    return (await cur.fetchone())[0]
+
+
+async def delete_key_error(error_id: int) -> bool:
+    """Delete a key error log entry."""
+    db = await get_db()
+    cur = await db.execute("DELETE FROM key_errors WHERE id=?", (error_id,))
+    await db.commit()
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

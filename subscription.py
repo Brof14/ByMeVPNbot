@@ -12,8 +12,8 @@ from aiogram.types import Message, CallbackQuery
 
 from config import ADMIN_ID
 from utils import LOGO_URL, send_with_photo, safe_answer
-from database import add_key, get_referrer, add_payment, set_trial_used
-from xui import create_client, get_subscription_url
+from database import add_key, get_referrer, add_payment, set_trial_used, log_key_error
+from xui import create_client, build_vless_link
 from keyboards import after_key_kb, cancel_kb
 from states import BuyFlow
 
@@ -78,16 +78,18 @@ async def ask_config_name(
             # Calculate new expiry for display
             from constants import format_timestamp
             new_expiry = old_expiry + days * 86400
-            
-            # Get subscription URL
-            from xui import get_subscription_url
-            sub_url = get_subscription_url(key_to_extend.get("short_id", "")) if key_to_extend.get("short_id") else key_to_extend.get("key", "")
-            
+
+            # Get VLESS link from existing key
+            existing_key = key_to_extend.get("key", "")
+            if not existing_key and key_to_extend.get("uuid"):
+                # If key is empty, rebuild VLESS link from UUID
+                existing_key = build_vless_link(key_to_extend.get("uuid"), remark=key_to_extend.get("remark", f"Key #{key_id}"))
+
             text = (
-                f"✅ <b>Подписка продлена!</b>\n\n"
+                f"✅ <b>Ключ продлён!</b>\n\n"
                 f"🔑 <b>Ключ #{key_id}</b> продлен на <b>{days} дней</b>\n"
                 f"📅 Новый срок: до <b>{format_timestamp(new_expiry)[:10]}</b>\n\n"
-                f"🔗 <code>{sub_url}</code>\n\n"
+                f"🔗 <code>{existing_key}</code>\n\n"
                 f"Название сервера осталось прежним — всё работает как раньше!"
             )
             
@@ -182,17 +184,16 @@ async def deliver_key(
     payload: str = "",
 ) -> bool:
     """
-    Create 3x-UI client, store in DB, send key to user.
+    Create 3x-UI client, store in DB, send VLESS link to user.
     limit_ip — number of simultaneous device connections (1, 2 or 5).
     Returns True on success.
     """
-    from xui import validate_device_limit
-    
+    from xui import validate_device_limit, build_vless_link
+
     # Validate device limit
     limit_ip = validate_device_limit(limit_ip)
-    
+
     client_uuid = None
-    client_short_id = None
     try:
         logger.info("deliver_key: user=%d name='%s' days=%d limit_ip=%d method=%s", user_id, config_name, days, limit_ip, method)
 
@@ -209,16 +210,16 @@ async def deliver_key(
             return False
 
         client_uuid = client_result["uuid"]
-        client_short_id = client_result["short_id"]
-        sub_url = get_subscription_url(client_short_id)
-        
+        # Build VLESS link instead of subscription URL
+        vless_link = build_vless_link(client_uuid, remark=config_name)
+
         # Log the generated key for debugging
-        logger.info("Subscription URL for user %d: %s", user_id, sub_url)
-        
+        logger.info("VLESS link for user %d: %s", user_id, vless_link)
+
         # Run database operations in parallel for better performance
         db_tasks = []
-        db_tasks.append(add_key(user_id, sub_url, config_name, client_uuid, days, limit_ip, short_id=client_short_id))
-        
+        db_tasks.append(add_key(user_id, vless_link, config_name, client_uuid, days, limit_ip))
+
         # Save payment record only after successful key creation
         if is_paid and amount > 0:
             # All paid plans now support up to 5 devices
@@ -232,9 +233,9 @@ async def deliver_key(
         await asyncio.gather(*db_tasks)
 
         text = (
-            f"Подписка активирована! Спасибо, что выбрали нас❤️\n\n"
-            f"Скопируйте ссылку на подписку и посмотрите инструкцию подключения:\n"
-            f"<code>{sub_url}</code>"
+            f"Ключ активирован! Спасибо, что выбрали нас❤️\n\n"
+            f"Скопируйте VLESS-ключ и посмотрите инструкцию подключения:\n"
+            f"<code>{vless_link}</code>"
         )
         await bot.send_photo(
             chat_id=chat_id, photo=LOGO_URL,
@@ -254,7 +255,26 @@ async def deliver_key(
 
     except Exception as e:
         logger.exception("deliver_key FAILED for user=%d name='%s': %s", user_id, config_name, e)
-        
+
+        # Log error to database for admin panel tracking
+        try:
+            await log_key_error(
+                user_id=user_id,
+                error_type="key_creation_failed",
+                error_message=str(e),
+                context={
+                    "config_name": config_name,
+                    "days": days,
+                    "limit_ip": limit_ip,
+                    "is_paid": is_paid,
+                    "amount": amount,
+                    "method": method,
+                    "payload": payload
+                }
+            )
+        except Exception as log_error:
+            logger.error("Failed to log key error: %s", log_error)
+
         # Cleanup: if we created a client but failed later, try to delete it
         if client_uuid:
             try:

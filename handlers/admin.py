@@ -31,6 +31,7 @@ from database import (
     get_all_keys_paginated, get_keys_count,
     create_promo_code, get_all_promo_codes, delete_promo_code, validate_promo_code,
     has_trial_used, get_db,
+    get_key_errors, get_key_errors_count, delete_key_error, get_user_key_errors,
 )
 from states import AdminFlow
 from utils import safe_answer
@@ -55,25 +56,27 @@ def _main_kb() -> InlineKeyboardMarkup:
         # Row 2: Users
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users:0"),
          InlineKeyboardButton(text="📋 Юзеры+Ключи", callback_data="admin_users_ext:0")],
-        # Row 3: Keys & Search
+        # Row 3: Keys & Errors
         [InlineKeyboardButton(text="🗝 Все ключи", callback_data="admin_all_keys:0"),
-         InlineKeyboardButton(text="🔍 Поиск", callback_data="admin_search")],
-        # Row 4: Financial
-        [InlineKeyboardButton(text="💳 Платежи", callback_data="admin_payments"),
-         InlineKeyboardButton(text="💰 Возвраты", callback_data="admin_refunds")],
-        # Row 5: Marketing & Broadcast
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"),
+         InlineKeyboardButton(text="❌ Ошибки ключей", callback_data="admin_key_errors:0")],
+        # Row 4: Search & Financial
+        [InlineKeyboardButton(text="� Поиск", callback_data="admin_search"),
+         InlineKeyboardButton(text="� Платежи", callback_data="admin_payments")],
+        # Row 5: Financial
+        [InlineKeyboardButton(text="� Возвраты", callback_data="admin_refunds"),
          InlineKeyboardButton(text="🎁 Рефералы", callback_data="admin_referrals")],
-        # Row 6: Exports
+        # Row 6: Marketing & Broadcast
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
+        # Row 7: Exports
         [InlineKeyboardButton(text="📥 Пользователи CSV", callback_data="admin_export_csv"),
-         InlineKeyboardButton(text="� Ключи CSV", callback_data="admin_export_keys_csv")],
-        # Row 7: Promo & System
+         InlineKeyboardButton(text="📥 Ключи CSV", callback_data="admin_export_keys_csv")],
+        # Row 8: Promo & System
         [InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin_promo_codes"),
          InlineKeyboardButton(text="⚙️ Система", callback_data="admin_system")],
-        # Row 8: Mass Actions
+        # Row 9: Mass Actions
         [InlineKeyboardButton(text="🎁 Выдать всем пробник (3д)", callback_data="admin_mass_trial"),
          InlineKeyboardButton(text="🎁 Пробник 5 дней всем", callback_data="admin_mass_trial_5d")],
-        # Row 9: Maintenance
+        # Row 10: Maintenance
         [InlineKeyboardButton(text="🧹 Очистка", callback_data="admin_cleanup")],
     ])
 
@@ -95,8 +98,9 @@ def _user_kb(user_id: int) -> InlineKeyboardMarkup:
         # Row 3: Management
         [InlineKeyboardButton(text="🔄 Сброс пробника", callback_data=f"admin_reset_trial:{user_id}"),
          InlineKeyboardButton(text="✉️ Написать", callback_data=f"admin_pm:{user_id}")],
-        # Row 4: Financial
-        [InlineKeyboardButton(text="💰 Возврат", callback_data=f"admin_refund_user:{user_id}")],
+        # Row 4: Grant Key & Refund
+        [InlineKeyboardButton(text="🆕 Выдать ключ", callback_data=f"admin_grant_key:{user_id}"),
+         InlineKeyboardButton(text="💰 Возврат", callback_data=f"admin_refund_user:{user_id}")],
         # Row 5: Danger zone
         [InlineKeyboardButton(text="🗑 Удалить пользователя", callback_data=f"admin_del_user:{user_id}")],
         # Row 6: Navigation
@@ -255,7 +259,7 @@ async def cmd_give_trial_all(message: Message, bot: Bot):
                 chat_id=user_id,
                 config_name=f"Trial-{user_id}",
                 days=days,
-                limit_ip=1,
+                limit_ip=5,  # All subscriptions (trial and paid) support up to 5 devices
                 is_paid=False,
                 amount=0,
                 currency="RUB",
@@ -1834,11 +1838,13 @@ async def cb_key_detail(callback: CallbackQuery):
     days_left = max(0, (expiry - now) // 86400) if expiry > now else 0
     is_active = expiry > now
     status = "🟢 Активен" if is_active else "🔴 Истёк"
-    
-    # Get subscription URL
-    from xui import get_subscription_url
-    sub_url = get_subscription_url(key.get("short_id", "")) if key.get("short_id") else key.get("key", "")
-    
+
+    # Get VLESS link from existing key or rebuild from UUID
+    from xui import build_vless_link
+    vless_link = key.get("key", "")
+    if not vless_link and key.get("uuid"):
+        vless_link = build_vless_link(key.get("uuid"), remark=key.get("remark", f"Key #{key_id}"))
+
     text = (
         f"🔑 <b>Ключ #{key_id}</b>\n"
         f"━━━━━━━━━━━━━━━\n\n"
@@ -1848,9 +1854,8 @@ async def cb_key_detail(callback: CallbackQuery):
         f"📅 <b>Истекает:</b> {fmt_date(expiry)[:16]}\n"
         f"👤 <b>Пользователь:</b> <code>{key.get('user_id')}</code>\n"
         f"🌐 <b>Устройств:</b> {key.get('limit_ip', 1)}\n\n"
-        f"🔗 <b>Подписка:</b>\n<code>{sub_url}</code>\n\n"
-        f"🆔 <b>UUID:</b> <code>{key.get('uuid', 'N/A')[:20]}...</code>\n"
-        f"🔗 <b>Short ID:</b> <code>{key.get('short_id', 'N/A')}</code>"
+        f"🔗 <b>VLESS-ключ:</b>\n<code>{vless_link}</code>\n\n"
+        f"🆔 <b>UUID:</b> <code>{key.get('uuid', 'N/A')[:20]}...</code>"
     )
     
     await callback.message.edit_text(
@@ -2467,3 +2472,58 @@ async def cb_mass_trial_5d_confirm(callback: CallbackQuery, bot: Bot):
     )
     
     logger.info(f"Mass trial 5d completed: {success_count} success, {failed_count} failed out of {len(rows)} users")
+
+
+# ---------------------------------------------------------------------------
+# Key Errors
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("admin_key_errors:"))
+async def cb_admin_key_errors(callback: CallbackQuery, bot: Bot):
+    """Show key issuance errors with pagination."""
+    await safe_answer(callback)
+    offset = int(callback.data.split(":")[1])
+
+    errors = await get_key_errors(limit=20, offset=offset)
+    total_count = await get_key_errors_count()
+
+    if not errors:
+        await callback.message.edit_text(
+            "✅ Ошибок выдачи ключей нет.",
+            reply_markup=_back_kb()
+        )
+        return
+
+    import json
+    text = f"❌ <b>Ошибки выдачи ключей</b>\n\nВсего: {total_count}\n\n"
+
+    for err in errors:
+        error_date = datetime.fromtimestamp(err["created"]).strftime("%d.%m.%Y %H:%M")
+        context = json.loads(err["context"]) if err["context"] else {}
+        text += (
+            f"🆔 ID: {err['id']}\n"
+            f"👤 User: {err['user_id']}\n"
+            f"📅 Дата: {error_date}\n"
+            f"🔧 Тип: {err['error_type']}\n"
+            f"📝 Ошибка: {err['error_message'][:100] if err['error_message'] else 'N/A'}...\n"
+            f"📋 Контекст: {json.dumps(context, ensure_ascii=False)[:100] if context else 'N/A'}...\n"
+            f"─────────────\n"
+        )
+
+    # Pagination buttons
+    kb_rows = []
+    nav_row = []
+    if offset > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_key_errors:{max(0, offset - 20)}"))
+    if offset + 20 < total_count:
+        nav_row.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin_key_errors:{offset + 20}"))
+    if nav_row:
+        kb_rows.append(nav_row)
+
+    kb_rows.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")])
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    )

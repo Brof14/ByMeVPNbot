@@ -27,7 +27,7 @@ from database import (
     has_active_subscription, has_paid_subscription,
     has_ever_had_key, get_user_keys, add_key,
 )
-from xui import get_subscription_url
+from xui import create_client, build_vless_link
 from keyboards import main_menu_new_user, main_menu_existing, main_menu_with_keys, back_to_menu, cancel_kb
 from utils import send_with_photo, safe_answer, LOGO_URL
 from subscription import ask_config_name, deliver_key
@@ -321,24 +321,24 @@ async def cb_claim_trial(callback: CallbackQuery, bot: Bot):
     
     # Create trial key (3 days)
     try:
-        from xui import create_client, get_subscription_url
+        from xui import create_client, build_vless_link
+        from database import add_key
         client_result = await create_client(user_id=user_id, days=3, limit_ip=5)
-        
+
         if client_result:
-            sub_url = get_subscription_url(client_result["short_id"])
-            await create_key(
+            vless_link = build_vless_link(client_result["uuid"], remark="Реферальный триал")
+            await add_key(
                 user_id=user_id,
-                key=sub_url,
+                key=vless_link,
+                remark="Реферальный триал",
                 uuid=client_result["uuid"],
-                short_id=client_result["short_id"],
                 days=3,
-                limit_ip=5,
-                remark="Реферальный триал"
+                limit_ip=5
             )
             
             await callback.message.edit_text(
                 "🎉 <b>Ваш пробный ключ создан!</b>\n\n"
-                f"🔑 <b>Ключ:</b> <code>{sub_url}</code>\n"
+                f"🔑 <b>Ключ:</b> <code>{vless_link}</code>\n"
                 f"⏳ <b>Срок:</b> 3 дня\n"
                 f"📱 <b>Устройств:</b> 5\n\n"
                 "🚀 Подключайтесь и пользуйтесь!",
@@ -399,7 +399,7 @@ async def cb_trial(callback: CallbackQuery, bot: Bot, state: FSMContext):
             "days": TRIAL_DAYS, "prefix": "trial", "is_paid": False,
             "amount": 0, "currency": "RUB", "method": "trial",
             "payload": f"trial_{user_id}", "_trial_user_id": user_id,
-            "limit_ip": 1,  # Trial is always 1 device only
+            "limit_ip": 5,  # All subscriptions (trial and paid) support up to 5 devices
         },
     )
 
@@ -522,14 +522,19 @@ async def cb_key_details(callback: CallbackQuery, bot: Bot):
     # Build detailed view
     status = "✅ Активен" if key['expiry'] > int(time.time()) else "❌ Истёк"
     expiry_date = time.strftime('%d.%m.%Y', time.localtime(key['expiry']))
-    
+
+    # Get VLESS link from existing key or rebuild from UUID
+    vless_link = key.get('key', '')
+    if not vless_link and key.get('uuid'):
+        vless_link = build_vless_link(key.get('uuid'), remark=key.get('remark', f"Key #{key_id}"))
+
     text = (
         f"🔑 <b>Ключ #{key_id}</b>\n\n"
         f"📱 Устройств: {key['limit_ip']}\n"
         f"📅 Срок: до {expiry_date}\n"
         f"Статус: {status}\n\n"
-        f"🔗 <b>Ссылка для подключения:</b>\n"
-        f"<code>{get_subscription_url(key['short_id']) if key.get('short_id') else key['key']}</code>\n\n"
+        f"🔗 <b>VLESS-ключ:</b>\n"
+        f"<code>{vless_link}</code>\n\n"
         f"Нажмите на ссылку, чтобы скопировать её."
     )
     
@@ -564,14 +569,17 @@ async def cb_key_instructions(callback: CallbackQuery, bot: Bot):
     if not key:
         await callback.message.answer("Ключ не найден.", reply_markup=back_to_menu())
         return
-    
-    sub_url = get_subscription_url(key['short_id']) if key.get('short_id') else key['key']
-    
+
+    # Get VLESS link from existing key or rebuild from UUID
+    vless_link = key.get('key', '')
+    if not vless_link and key.get('uuid'):
+        vless_link = build_vless_link(key.get('uuid'), remark=key.get('remark', f"Key #{key_id}"))
+
     # Show device selection guide
     text = (
         f"📋 <b>Инструкция подключения</b>\n\n"
         f"🔑 <b>Ключ #{key_id}</b>\n"
-        f"🔗 <code>{sub_url}</code>\n\n"
+        f"🔗 <code>{vless_link}</code>\n\n"
         f"<b>Выберите ваше устройство:</b>"
     )
     
