@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
     trial_used  INTEGER DEFAULT 0,
     total_paid  INTEGER DEFAULT 0,
     email       TEXT UNIQUE,
+    is_banned   INTEGER DEFAULT 0,
+    ban_reason  TEXT,
     created     INTEGER DEFAULT (strftime('%s','now'))
 );
 
@@ -157,12 +159,15 @@ CREATE INDEX IF NOT EXISTS idx_email_auth_email ON email_auth(email);
 CREATE TABLE IF NOT EXISTS promo_codes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
-    discount_percent INTEGER NOT NULL DEFAULT 10,
+    promo_type TEXT NOT NULL DEFAULT 'percent',  -- 'percent', 'fixed_rub', 'free_days'
+    discount_value INTEGER NOT NULL DEFAULT 10,  -- value based on type
     max_uses INTEGER NOT NULL DEFAULT 1,
     uses_count INTEGER DEFAULT 0,
-    created INTEGER DEFAULT (strftime('%s','now')),
+    tariff_binding INTEGER,  -- optional: bind to specific tariff (months)
+    start_date INTEGER DEFAULT (strftime('%s','now')),
     expires_at INTEGER NOT NULL,
-    is_active INTEGER DEFAULT 1
+    is_active INTEGER DEFAULT 1,
+    created INTEGER DEFAULT (strftime('%s','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code);
 CREATE INDEX IF NOT EXISTS idx_promo_codes_active ON promo_codes(is_active);
@@ -190,6 +195,29 @@ CREATE TABLE IF NOT EXISTS key_errors (
 );
 CREATE INDEX IF NOT EXISTS idx_key_errors_user ON key_errors(user_id);
 CREATE INDEX IF NOT EXISTS idx_key_errors_created ON key_errors(created);
+
+-- Referral link clicks tracking
+CREATE TABLE IF NOT EXISTS referral_clicks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrer_id INTEGER NOT NULL,
+    clicked_at INTEGER DEFAULT (strftime('%s','now')),
+    user_agent TEXT,
+    ip_address TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_referral_clicks_referrer ON referral_clicks(referrer_id);
+CREATE INDEX IF NOT EXISTS idx_referral_clicks_created ON referral_clicks(clicked_at);
+
+-- Admin action logs
+CREATE TABLE IF NOT EXISTS admin_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    action_type TEXT NOT NULL,
+    action_details TEXT,
+    target_user_id INTEGER,
+    created INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_admin_logs_admin ON admin_logs(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created);
 """
 
 
@@ -399,6 +427,81 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # Migration: create referral_clicks table
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS referral_clicks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER NOT NULL,
+                clicked_at INTEGER DEFAULT (strftime('%s','now')),
+                user_agent TEXT,
+                ip_address TEXT
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_referral_clicks_referrer ON referral_clicks(referrer_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_referral_clicks_created ON referral_clicks(clicked_at)")
+        logger.info("Migration: created referral_clicks table")
+    except Exception:
+        pass
+
+    # Migration: create admin_logs table
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                action_details TEXT,
+                target_user_id INTEGER,
+                created INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_admin ON admin_logs(admin_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created)")
+        logger.info("Migration: created admin_logs table")
+    except Exception:
+        pass
+
+    # Migration: enhance promo_codes table with new columns
+    try:
+        await db.execute("ALTER TABLE promo_codes ADD COLUMN promo_type TEXT DEFAULT 'percent'")
+        logger.info("Migration: added promo_type column to promo_codes")
+    except Exception:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE promo_codes ADD COLUMN discount_value INTEGER DEFAULT 10")
+        logger.info("Migration: added discount_value column to promo_codes")
+    except Exception:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE promo_codes ADD COLUMN tariff_binding INTEGER")
+        logger.info("Migration: added tariff_binding column to promo_codes")
+    except Exception:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE promo_codes ADD COLUMN start_date INTEGER")
+        # Set default value for existing rows
+        await db.execute("UPDATE promo_codes SET start_date = created WHERE start_date IS NULL")
+        logger.info("Migration: added start_date column to promo_codes")
+    except Exception as e:
+        logger.info("Migration: start_date column may already exist: %s", e)
+
+    # Migration: add user ban columns
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+        logger.info("Migration: added is_banned column to users")
+    except Exception:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN ban_reason TEXT")
+        logger.info("Migration: added ban_reason column to users")
+    except Exception:
+        pass
+
 
 async def init_db() -> None:
     """Initialize database with WAL mode and run migrations."""
@@ -503,17 +606,85 @@ async def update_total_paid(user_id: int, amount: int) -> None:
 async def get_user_stats(user_id: int) -> dict:
     db = await get_db()
     cur = await db.execute(
-        "SELECT trial_used, total_paid, referrer_id FROM users WHERE user_id=?",
+        "SELECT trial_used, total_paid, referrer_id, is_banned, ban_reason FROM users WHERE user_id=?",
         (user_id,)
     )
     row = await cur.fetchone()
     if not row:
-        return {"trial_used": False, "total_paid": 0, "referrer_id": None}
+        return {"trial_used": False, "total_paid": 0, "referrer_id": None, "is_banned": False, "ban_reason": None}
     return {
         "trial_used": bool(row[0]),
         "total_paid": row[1] or 0,
-        "referrer_id": row[2]
+        "referrer_id": row[2],
+        "is_banned": bool(row[3]),
+        "ban_reason": row[4]
     }
+
+
+async def ban_user(user_id: int, reason: str = None) -> bool:
+    """Ban a user."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE users SET is_banned=1, ban_reason=? WHERE user_id=?",
+            (reason, user_id)
+        )
+        await db.commit()
+        invalidate_user_cache(user_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to ban user %d: %s", user_id, e)
+        return False
+
+
+async def unban_user(user_id: int) -> bool:
+    """Unban a user."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE users SET is_banned=0, ban_reason=NULL WHERE user_id=?",
+            (user_id,)
+        )
+        await db.commit()
+        invalidate_user_cache(user_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to unban user %d: %s", user_id, e)
+        return False
+
+
+async def add_manual_days(user_id: int, days: int, admin_id: int) -> bool:
+    """Add manual days to user's latest active key or create new one."""
+    db = await get_db()
+    current_time = int(time.time())
+
+    try:
+        # Find user's latest key
+        cur = await db.execute(
+            "SELECT id, expiry FROM keys WHERE user_id=? ORDER BY created DESC LIMIT 1",
+            (user_id,)
+        )
+        row = await cur.fetchone()
+
+        if row:
+            # Extend existing key
+            key_id, current_expiry = row
+            new_expiry = max(current_expiry, current_time) + days * 86400
+            await db.execute(
+                "UPDATE keys SET expiry=? WHERE id=?",
+                (new_expiry, key_id)
+            )
+        else:
+            # Create new key - this will be handled by the calling code
+            # For now, just return False to indicate need for key creation
+            return False
+
+        await db.commit()
+        invalidate_subscription_cache(user_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to add manual days to user %d: %s", user_id, e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1021,14 +1192,23 @@ async def try_claim_trial(user_id: int) -> bool:
     return True
 
 
-async def get_all_payments(limit: int = 50, offset: int = 0) -> list[dict]:
-    """Get all payments with pagination."""
+async def get_all_payments(limit: int = 50, offset: int = 0, method: str = None) -> list[dict]:
+    """Get all payments with pagination and optional method filtering."""
     db = await get_db()
-    cur = await db.execute(
-        "SELECT user_id, amount, currency, method, payload, paid_at "
-        "FROM payments ORDER BY paid_at DESC LIMIT ? OFFSET ?",
-        (limit, offset)
-    )
+    
+    if method:
+        cur = await db.execute(
+            "SELECT user_id, amount, currency, method, payload, paid_at "
+            "FROM payments WHERE method = ? ORDER BY paid_at DESC LIMIT ? OFFSET ?",
+            (method, limit, offset)
+        )
+    else:
+        cur = await db.execute(
+            "SELECT user_id, amount, currency, method, payload, paid_at "
+            "FROM payments ORDER BY paid_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+    
     rows = await cur.fetchall()
     return [
         {
@@ -1099,7 +1279,7 @@ async def get_referral_balance(user_id: int) -> dict:
         return {"balance": 0, "total_earned": 0}
     return {"balance": row[0], "total_earned": row[1]}
 
-async def add_referral_earning(referrer_id: int, referred_id: int, amount: int = 80, payment_id: int = None) -> bool:
+async def add_referral_earning(referrer_id: int, referred_id: int, amount: int = 50, payment_id: int = None) -> bool:
     """Начислить бонус за первую оплату приглашённого (80₽)"""
     db = await get_db()
     try:
@@ -1255,6 +1435,127 @@ async def get_referral_stats(user_id: int) -> dict:
         "total_earned": total_earned,
         "can_withdraw": balance_info["balance"] >= 400
     }
+
+
+async def log_referral_click(referrer_id: int, user_agent: str = None, ip_address: str = None) -> int:
+    """Log a referral link click"""
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO referral_clicks(referrer_id, user_agent, ip_address) VALUES(?,?,?)",
+        (referrer_id, user_agent, ip_address)
+    )
+    await db.commit()
+    return cur.lastrowid
+
+
+async def get_referral_clicks_count(referrer_id: int) -> int:
+    """Get total number of referral link clicks"""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM referral_clicks WHERE referrer_id=?",
+        (referrer_id,)
+    )
+    return (await cur.fetchone())[0]
+
+
+async def get_referral_stats_enhanced(referrer_id: int) -> dict:
+    """Get enhanced referral statistics with detailed tracking"""
+    db = await get_db()
+    current_time = int(time.time())
+    
+    # Total clicks on referral link
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM referral_clicks WHERE referrer_id=?",
+        (referrer_id,)
+    )
+    total_clicks = (await cur.fetchone())[0]
+    
+    # Total registrations (users who registered via referral)
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM referrals WHERE referrer_id=?",
+        (referrer_id,)
+    )
+    total_registrations = (await cur.fetchone())[0]
+    
+    # Active clients (users with active subscriptions)
+    cur = await db.execute(
+        """
+        SELECT COUNT(DISTINCT r.referred_id)
+        FROM referrals r
+        INNER JOIN keys k ON r.referred_id = k.user_id
+        WHERE r.referrer_id=? AND k.expiry > ?
+        """,
+        (referrer_id, current_time)
+    )
+    active_clients = (await cur.fetchone())[0]
+    
+    # Paid clients (users who made at least one payment)
+    cur = await db.execute(
+        """
+        SELECT COUNT(DISTINCT r.referred_id)
+        FROM referrals r
+        INNER JOIN payments p ON r.referred_id = p.user_id
+        WHERE r.referrer_id=? AND p.method != 'trial'
+        """,
+        (referrer_id,)
+    )
+    paid_clients = (await cur.fetchone())[0]
+    
+    # Total bonus days earned from referral_events
+    cur = await db.execute(
+        """
+        SELECT COALESCE(SUM(days_awarded), 0)
+        FROM referral_events
+        WHERE referrer_id=?
+        """,
+        (referrer_id,)
+    )
+    total_bonus_days = (await cur.fetchone())[0]
+    
+    # Balance info
+    balance_info = await get_referral_balance(user_id=referrer_id)
+    
+    return {
+        "total_clicks": total_clicks,
+        "total_registrations": total_registrations,
+        "active_clients": active_clients,
+        "paid_clients": paid_clients,
+        "total_bonus_days": total_bonus_days,
+        "balance_rub": balance_info["balance"],
+        "total_earned_rub": balance_info["total_earned"],
+    }
+
+
+async def get_referred_users_list(referrer_id: int) -> list[dict]:
+    """Get list of referred users with their status"""
+    db = await get_db()
+    current_time = int(time.time())
+    
+    cur = await db.execute(
+        """
+        SELECT r.referred_id, r.created,
+               (SELECT COUNT(*) FROM keys WHERE user_id=r.referred_id AND expiry > ?) as active_keys,
+               (SELECT COUNT(*) FROM payments WHERE user_id=r.referred_id AND method != 'trial') as payment_count,
+               (SELECT COALESCE(SUM(days_awarded), 0) FROM referral_events 
+                WHERE referrer_id=? AND referred_id=r.referred_id) as bonus_days
+        FROM referrals r
+        WHERE r.referrer_id=?
+        ORDER BY r.created DESC
+        """,
+        (current_time, referrer_id, referrer_id)
+    )
+    
+    rows = await cur.fetchall()
+    return [
+        {
+            "user_id": row[0],
+            "registration_date": row[1],
+            "is_active": row[2] > 0,
+            "has_paid": row[3] > 0,
+            "bonus_days_awarded": row[4],
+        }
+        for row in rows
+    ]
 
 # ---------------------------------------------------------------------------
 # Admin Functions
@@ -1770,29 +2071,26 @@ async def get_all_users_csv() -> str:
     """Generate CSV export of all users"""
     import csv
     import io
-    
+
     users = await get_all_users()
-    
+
     output = io.StringIO()
     writer = csv.writer(output)
-    
+
     # Header
     writer.writerow([
-        'user_id', 'registered', 'trial_used', 'total_paid', 
-        'total_keys', 'active_keys'
+        'user_id', 'created', 'trial_used', 'total_paid'
     ])
-    
+
     # Data rows
     for user in users:
         writer.writerow([
             user['user_id'],
-            user['registered'],
+            user['created'],
             int(user['trial_used']),
-            user['total_paid'],
-            user['total_keys'],
-            user['active_keys']
+            user['total_paid']
         ])
-    
+
     return output.getvalue()
 
 
@@ -1892,20 +2190,25 @@ async def update_user_email(user_id: int, email: str) -> bool:
 
 async def create_promo_code(
     code: str,
-    discount_percent: int,
+    promo_type: str = "percent",
+    discount_value: int = 10,
     max_uses: int = 1,
-    valid_days: int = 30
+    valid_days: int = 30,
+    tariff_binding: int = None,
+    start_date: int = None
 ) -> bool:
-    """Create new promo code."""
+    """Create new promo code with enhanced options."""
     db = await get_db()
     current_time = int(time.time())
+    if start_date is None:
+        start_date = current_time
     expires_at = current_time + valid_days * 86400
-    
+
     try:
         await db.execute(
-            "INSERT INTO promo_codes(code, discount_percent, max_uses, uses_count, created, expires_at, is_active) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (code.upper(), discount_percent, max_uses, 0, current_time, expires_at, 1)
+            "INSERT INTO promo_codes(code, promo_type, discount_value, max_uses, uses_count, tariff_binding, start_date, expires_at, is_active, created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (code.upper(), promo_type, discount_value, max_uses, 0, tariff_binding, start_date, expires_at, 1, current_time)
         )
         await db.commit()
         return True
@@ -1914,35 +2217,47 @@ async def create_promo_code(
         return False
 
 
-async def validate_promo_code(code: str) -> Optional[dict]:
+async def validate_promo_code(code: str, tariff_months: int = None) -> Optional[dict]:
     """Validate promo code and return info if valid."""
     db = await get_db()
     current_time = int(time.time())
-    
+
     cur = await db.execute(
-        "SELECT code, discount_percent, max_uses, uses_count, expires_at "
+        "SELECT code, promo_type, discount_value, max_uses, uses_count, tariff_binding, start_date, expires_at "
         "FROM promo_codes WHERE code=? AND is_active=1",
         (code.upper(),)
     )
     row = await cur.fetchone()
-    
+
     if not row:
         return None
-    
-    # Check expiration
-    if current_time > row[4]:
+
+    # Check if not started yet
+    if row[6] > current_time:
         return None
-    
-    # Check usage limit
-    if row[3] >= row[2]:
+
+    # Check if expired
+    if row[7] < current_time:
         return None
-    
+
+    # Check if max uses reached
+    if row[3] <= row[4]:
+        return None
+
+    # Check tariff binding if specified
+    if row[5] is not None and tariff_months is not None:
+        if row[5] != tariff_months:
+            return None
+
     return {
         "code": row[0],
-        "discount_percent": row[1],
-        "max_uses": row[2],
-        "uses_count": row[3],
-        "expires_at": row[4]
+        "promo_type": row[1],
+        "discount_value": row[2],
+        "max_uses": row[3],
+        "uses_count": row[4],
+        "tariff_binding": row[5],
+        "start_date": row[6],
+        "expires_at": row[7],
     }
 
 
@@ -1978,30 +2293,58 @@ async def use_promo_code(code: str, user_id: int) -> bool:
         logger.error("Failed to use promo code: %s", e)
         return False
 
-
 async def get_all_promo_codes() -> list[dict]:
     """Get all promo codes with usage stats."""
     db = await get_db()
     current_time = int(time.time())
-    
-    cur = await db.execute(
-        "SELECT code, discount_percent, max_uses, uses_count, created, expires_at, is_active "
-        "FROM promo_codes ORDER BY created DESC"
-    )
-    rows = await cur.fetchall()
-    
-    return [
-        {
-            "code": row[0],
-            "discount_percent": row[1],
-            "max_uses": row[2],
-            "uses_count": row[3],
-            "created": row[4],
-            "expires_at": row[5],
-            "is_active": row[6] and current_time <= row[5] and row[3] < row[2]
-        }
-        for row in rows
-    ]
+
+    try:
+        # Try the full query with new columns
+        cur = await db.execute(
+            "SELECT code, promo_type, discount_value, max_uses, uses_count, tariff_binding, start_date, expires_at, is_active, created "
+            "FROM promo_codes ORDER BY created DESC"
+        )
+        rows = await cur.fetchall()
+
+        return [
+            {
+                "code": row[0],
+                "promo_type": row[1],
+                "discount_value": row[2],
+                "max_uses": row[3],
+                "uses_count": row[4],
+                "tariff_binding": row[5],
+                "start_date": row[6],
+                "expires_at": row[7],
+                "is_active": row[8],
+                "created": row[9],
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        # Fallback to simpler query if columns don't exist
+        logger.warning("Using fallback query for promo_codes: %s", e)
+        cur = await db.execute(
+            "SELECT code, discount_percent, max_uses, uses_count, expires_at, is_active, created "
+            "FROM promo_codes ORDER BY created DESC"
+        )
+        rows = await cur.fetchall()
+
+        return [
+            {
+                "code": row[0],
+                "promo_type": "percent",
+                "discount_value": row[1],
+                "max_uses": row[2],
+                "uses_count": row[3],
+                "tariff_binding": None,
+                "start_date": row[6],
+                "expires_at": row[4],
+                "is_active": row[5],
+                "created": row[6],
+            }
+            for row in rows
+        ]
 
 
 async def delete_promo_code(code: str) -> bool:
@@ -2014,6 +2357,54 @@ async def delete_promo_code(code: str) -> bool:
     except Exception as e:
         logger.error("Failed to delete promo code: %s", e)
         return False
+
+
+async def log_admin_action(admin_id: int, action_type: str, action_details: str, target_user_id: int = None) -> int:
+    """Log admin action for audit trail."""
+    db = await get_db()
+    cur = await db.execute(
+        "INSERT INTO admin_logs(admin_id, action_type, action_details, target_user_id) VALUES(?,?,?,?)",
+        (admin_id, action_type, action_details, target_user_id)
+    )
+    await db.commit()
+    return cur.lastrowid
+
+
+async def get_admin_logs(limit: int = 50, offset: int = 0, admin_id: int = None, action_type: str = None) -> list[dict]:
+    """Get admin logs with optional filtering."""
+    db = await get_db()
+    
+    query = "SELECT id, admin_id, action_type, action_details, target_user_id, created FROM admin_logs"
+    params = []
+    
+    conditions = []
+    if admin_id:
+        conditions.append("admin_id = ?")
+        params.append(admin_id)
+    if action_type:
+        conditions.append("action_type = ?")
+        params.append(action_type)
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
+    query += " ORDER BY created DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    
+    cur = await db.execute(query, params)
+    rows = await cur.fetchall()
+    
+    return [
+        {
+            "id": row[0],
+            "admin_id": row[1],
+            "action_type": row[2],
+            "action_details": row[3],
+            "target_user_id": row[4],
+            "created": row[5],
+        }
+        for row in rows
+    ]
 
 
 async def get_all_keys_csv() -> str:

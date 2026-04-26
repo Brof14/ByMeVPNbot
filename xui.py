@@ -314,7 +314,7 @@ async def create_client(user_id: int, days: int, limit_ip: int = 1) -> Optional[
         client_settings = json.dumps({
             "clients": [{
                 "id": client_id,
-                "email": client_id,
+                "email": email,
                 "limitIp": limit_ip,
                 "totalGB": 0,
                 "expiryTime": expiry_ms,
@@ -374,16 +374,37 @@ async def update_client_expiry(client_uuid: str, new_expiry_timestamp: int) -> b
         http = await get_session()
         await _login(http)
         
-        # Use safe updateClient endpoint - only send the updated client
-        # Convert timestamp to milliseconds for 3x-UI
-        expiry_ms = new_expiry_timestamp * 1000
+        # First, get the current client data to preserve all fields
+        url = f"{XUI_HOST}/panel/api/inbounds/get/{INBOUND_ID}"
+        resp = await http.get(url)
+        resp.raise_for_status()
+        data = resp.json()
         
+        if not data.get("success"):
+            raise RuntimeError(f"Failed to get inbound data: {data.get('msg')}")
+        
+        inbound_obj = data.get("obj", {})
+        settings = json.loads(inbound_obj.get("settings", "{}"))
+        clients = settings.get("clients", [])
+        
+        # Find the client to update
+        client_data = None
+        for client in clients:
+            if client.get("id") == client_uuid:
+                client_data = client
+                break
+        
+        if not client_data:
+            raise RuntimeError(f"Client {client_uuid} not found in inbound")
+        
+        # Update only the expiryTime while preserving all other fields
+        expiry_ms = new_expiry_timestamp * 1000
+        client_data["expiryTime"] = expiry_ms
+        
+        # Send the complete client object back to 3x-UI
         client_settings = json.dumps({
-            "clients": [{
-                "id": client_uuid,
-                "expiryTime": expiry_ms
-            }]
-        })
+            "clients": [client_data]
+        }, ensure_ascii=False)
         
         payload = {
             "id": INBOUND_ID,
@@ -398,7 +419,9 @@ async def update_client_expiry(client_uuid: str, new_expiry_timestamp: int) -> b
         if not result.get("success"):
             raise RuntimeError(f"Update failed: {result.get('msg')}")
         
-        logger.info("Updated client %s expiry to %d", client_uuid[:8], new_expiry_timestamp)
+        logger.info("Updated client %s expiry to %d (preserved email=%s, limitIp=%s, flow=%s)", 
+                   client_uuid[:8], new_expiry_timestamp, client_data.get("email", "N/A"), 
+                   client_data.get("limitIp", "N/A"), client_data.get("flow", "N/A"))
         
         # Verify Xray is still running after update
         if not await _verify_xray_running():

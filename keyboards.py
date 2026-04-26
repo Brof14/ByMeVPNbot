@@ -81,9 +81,9 @@ def tariff_selection_kb(discount_percent: int = 0) -> InlineKeyboardMarkup:
     
     # Base tariffs: (months, monthly_price, bonus_text)
     base_tariffs = [
-        (1, 149, ""),
-        (3, 109, " + 1 мес. 🎁"),
-        (6, 79, " + 2 мес. 🎁"),
+        (1, 99, ""),
+        (3, 79, " + 1 мес. 🎁"),
+        (6, 69, " + 2 мес. 🎁"),
         (12, 59, " + 3 мес. 🎁"),
     ]
     

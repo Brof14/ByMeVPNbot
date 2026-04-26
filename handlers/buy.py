@@ -52,24 +52,35 @@ async def cb_buy_vpn(callback: CallbackQuery, bot: Bot, state: FSMContext):
 async def cb_select_tariff(callback: CallbackQuery, bot: Bot, state: FSMContext):
     await safe_answer(callback)
     months = int(callback.data.split("_", 1)[1])
-    
+
     price_rub, days = PRICE_CONFIG.get(months, PRICE_CONFIG[1])
-    
+
     # Check for promo discount
     data = await state.get_data()
-    promo_discount = data.get("promo_discount", 0)
-    promo_code = data.get("promo_code", "")
+    promo_info = data.get("promo_info", {})
     original_price = price_rub
-    
-    logger.info(f"Selecting tariff: months={months}, original_price={original_price}, promo_discount={promo_discount}, promo_code={promo_code}")
-    
-    if promo_discount > 0:
-        price_rub = int(price_rub * (100 - promo_discount) / 100)
-        promo_text = f" (скидка {promo_discount}% применена)"
-        logger.info(f"Promo applied: new_price={price_rub}, discount={promo_discount}%")
+
+    logger.info(f"Selecting tariff: months={months}, original_price={original_price}, promo_info={promo_info}")
+
+    if promo_info:
+        promo_type = promo_info.get("promo_type", "percent")
+        discount_value = promo_info.get("discount_value", 0)
+
+        if promo_type == "percent":
+            price_rub = int(price_rub * (100 - discount_value) / 100)
+            promo_text = f" (скидка {discount_value}% применена)"
+        elif promo_type == "fixed_rub":
+            price_rub = max(0, price_rub - discount_value)
+            promo_text = f" (скидка {discount_value} ₽ применена)"
+        elif promo_type == "free_days":
+            # Free days promo - add days instead of discount
+            days += discount_value
+            promo_text = f" (+{discount_value} дней бесплатно)"
+        else:
+            promo_text = ""
     else:
         promo_text = ""
-    
+
     await state.update_data(months=months, price_rub=price_rub, days=days, original_price=original_price)
 
     period_name = PERIOD_LABELS.get(months, f"{months} мес.")
@@ -78,10 +89,10 @@ async def cb_select_tariff(callback: CallbackQuery, bot: Bot, state: FSMContext)
         f"<b>Вы покупаете доступ на {days} дней.</b>\n\n"
         f"Стоимость: <b>{price_rub} ₽</b>{promo_text}\n"
     )
-    
-    if promo_discount > 0:
+
+    if promo_info and promo_info.get("promo_type") in ["percent", "fixed_rub"]:
         text += f"<s>Без скидки: {original_price} ₽</s>\n"
-    
+
     text += (
         f"Устройств: до 5 одновременно\n\n"
         "Оплачивая подписку, вы соглашаетесь с <a href='https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-ByMeVPN-03-12'>политикой обработки персональных данных</a>, с <a href='https://telegra.ph/DOGOVOR-PUBLICHNOJ-OFERTY-ByMyVPN-03-12'>договором оферты</a> и с <a href='https://telegra.ph/SOGLASHENIE-O-REGULYARNYH-REKURRENTNYH-PLATEZHAH-ByMeVPN-03-12'>соглашением о присоединении к рекуррентной системе платежей</a>.\n\n"
@@ -89,7 +100,7 @@ async def cb_select_tariff(callback: CallbackQuery, bot: Bot, state: FSMContext)
         "После оплаты бот отправит вам ключ для приложения и подробную инструкцию по установке.\n\n"
         "<b>Выберите способ оплаты:</b>"
     )
-    
+
     await send_with_photo(bot, callback, text, payment_kb(price_rub, days))
 
 
@@ -259,26 +270,26 @@ async def on_successful_payment(message: Message, bot: Bot, state: FSMContext):
         devices=5
     )
 
-    # Начисляем бонус рефереалу за первую оплату (80₽)
-    try:
-        referrer_id = await get_referrer(user_id)
-        if referrer_id:
-            bonus_added = await add_referral_earning(referrer_id, user_id, 80, payment_id)
+    # Начисляем бонус рефереалу за первую оплату (50₽)
+    if referrer_id:
+        try:
+            from database import add_referral_earning
+            bonus_added = await add_referral_earning(referrer_id, user_id, 50, payment_id)
             if bonus_added:
-                logger.info("Referral bonus 80₽ added for referrer %d from user %d payment", referrer_id, user_id)
-                # Отправляем уведомление рефереалу
+                logger.info("Referral bonus 50₽ added for referrer %d from user %d payment", referrer_id, user_id)
+                # Уведомляем реферера
                 try:
                     await bot.send_message(
                         referrer_id,
-                        f"🎉 <b>Получен бонус!</b>\n\n"
-                        f"Ваш друг (ID: {user_id}) оформил подписку.\n"
-                        f"Начислено: +80 ₽\n"
+                        f"🎉 <b>Поздравляем!</b>\n\n"
+                        f"Ваш приглашённый оформил платную подписку.\n"
+                        f"Начислено: +50 ₽\n"
                         f"Текущий баланс обновлён в партнёрской программе."
                     )
                 except Exception as notify_error:
                     logger.error("Failed to notify referrer %d: %s", referrer_id, notify_error)
-    except Exception as e:
-        logger.error("Error processing referral bonus for user %d: %s", user_id, e)
+        except Exception as e:
+            logger.error("Error processing referral bonus for user %d: %s", user_id, e)
 
     # Ask for config name before delivering key
     await ask_config_name(
@@ -316,13 +327,13 @@ async def cmd_promo(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-        
+
         code = parts[1].strip().upper()
         user_id = message.from_user.id
-        
+
         # Validate promo code
         from database import validate_promo_code, use_promo_code
-        
+
         promo = await validate_promo_code(code)
         if not promo:
             await message.answer(
@@ -330,11 +341,12 @@ async def cmd_promo(message: Message, state: FSMContext):
                 "Возможные причины:\n"
                 "• Код истёк\n"
                 "• Достигнут лимит использований\n"
-                "• Код не существует",
+                "• Код не существует\n"
+                "• Код не начался ещё",
                 parse_mode="HTML"
             )
             return
-        
+
         # Mark promo code as used
         success = await use_promo_code(code, user_id)
         if not success:
@@ -344,22 +356,33 @@ async def cmd_promo(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-        
-        # Save discount to state for next purchase
-        discount_percent = promo["discount_percent"]
-        await state.update_data(promo_discount=discount_percent, promo_code=code)
-        
-        logger.info(f"Promo code {code} activated for user {user_id} with discount {discount_percent}%")
-        
+
+        # Save promo info to state for next purchase
+        promo_type = promo["promo_type"]
+        discount_value = promo["discount_value"]
+
+        if promo_type == "percent":
+            discount_text = f"{discount_value}%"
+        elif promo_type == "fixed_rub":
+            discount_text = f"{discount_value} ₽"
+        elif promo_type == "free_days":
+            discount_text = f"+{discount_value} дней"
+        else:
+            discount_text = f"{discount_value}"
+
+        await state.update_data(promo_info=promo, promo_code=code)
+
+        logger.info(f"Promo code {code} activated for user {user_id} with type {promo_type} value {discount_value}")
+
         await message.answer(
             f"✅ <b>Промокод активирован!</b>\n\n"
             f"🎁 Код: <code>{code}</code>\n"
-            f"💰 Скидка: <b>{discount_percent}%</b>\n\n"
-            f"При следующей покупке VPN стоимость будет автоматически уменьшена.\n\n"
-            f"👉 Нажмите /buy чтобы купить VPN со скидкой!",
+            f"💰 Бонус: <b>{discount_text}</b>\n\n"
+            f"При следующей покупке VPN бонус будет автоматически применён.\n\n"
+            f"👉 Нажмите /buy чтобы купить VPN!",
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         logger.error("Promo code error: %s", e)
         await message.answer("❌ Произошла ошибка. Попробуйте позже.")

@@ -2,7 +2,7 @@
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -26,22 +26,23 @@ def partner_main_kb(link: str) -> "InlineKeyboardMarkup":
     """Клавиатура партнёрской программы"""
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from urllib.parse import quote_plus
-    
+
     share_text = quote_plus(
         "Если у тебя не работает YouTube / Telegram — вот решение.\n\n"
         "Сам пользуюсь — реально норм VPN.\n\n"
         "🎁 3 дня бесплатно (без карты)\n"
         "📱 До 5 устройств\n"
         "⚡ Всё открывается без лагов\n\n"
-        "💰 От 59 ₽/мес\n\n"
+        "💰 От 99 ₽/мес\n\n"
         f"Попробуй:\n{link}"
     )
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text="Поделиться ссылкой",
             url=f"https://t.me/share/url?url={quote_plus(link)}&text={share_text}"
         )],
+        [InlineKeyboardButton(text="📋 Список приглашённых", callback_data="partner_referrals_list")],
         [InlineKeyboardButton(text="Вывести средства", callback_data="payout_request")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_menu"),
          InlineKeyboardButton(text="Поддержка", url="https://t.me/ByMeVPN_support_bot")]
@@ -58,33 +59,83 @@ async def cb_partner(callback: CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={user_id}"
 
-    # Получаем статистику
-    stats = await get_referral_stats(user_id)
-    balance_info = await get_referral_balance(user_id)
+    # Получаем расширенную статистику
+    from database import get_referral_stats_enhanced
+    stats = await get_referral_stats_enhanced(user_id)
 
     text = (
         "Приглашайте друзей и получайте бонусы:\n\n"
         "🎁 +5 дней за переход по вашей ссылке\n"
-        "💰 +80 рублей за каждого, кто оформит платную подписку\n"
-        "Минимальная сумма вывода — 400 рублей.\n\n"
-        f"<b>Ваша статистика:</b>\n"
-        f"Приглашено: {stats['total_referrals']} человек\n"
-        f"Оплатили подписку: {stats['paid_referrals']} человек\n"
-        f"Заработано всего: {stats['total_earned']} ₽\n"
-        f"Текущий баланс: {balance_info['balance']} ₽\n\n"
+        "💰 +50 рублей за каждого, кто оформит платную подписку\n"
+        "Минимальная сумма вывода — 200 рублей.\n\n"
+        f"<b>📊 Ваша статистика:</b>\n"
+        f"🔗 Переходов по ссылке: {stats['total_clicks']}\n"
+        f"👤 Зарегистрировалось: {stats['total_registrations']}\n"
+        f"✅ Активных клиентов: {stats['active_clients']}\n"
+        f"💳 Оплативших: {stats['paid_clients']}\n"
+        f"🎁 Бонусных дней: {stats['total_bonus_days']}\n"
+        f"💰 Заработано (₽): {stats['total_earned_rub']}\n"
+        f"💵 Текущий баланс: {stats['balance_rub']} ₽\n\n"
         f"<b>Ваша реферальная ссылка:</b>\n"
         f"<code>{link}</code>\n\n"
-        "Бонус +5 дней начисляется сразу при переходе по ссылке. Бонус +80₽ - за первую оплату."
+        "Бонус +5 дней начисляется сразу при переходе по ссылке. Бонус +50₽ - за первую оплату."
     )
-    
+
     await send_with_photo(bot, callback, text, partner_main_kb(link))
+
+
+@router.callback_query(F.data == "partner_referrals_list")
+async def cb_partner_referrals_list(callback: CallbackQuery, bot: Bot):
+    await safe_answer(callback)
+    user_id = callback.from_user.id
+
+    from database import get_referred_users_list
+    from constants import format_timestamp
+
+    referred_users = await get_referred_users_list(user_id)
+
+    if not referred_users:
+        text = (
+            "<b>📋 Список приглашённых</b>\n\n"
+            "У вас пока нет приглашённых пользователей.\n\n"
+            "Поделитесь своей реферальной ссылкой, чтобы начать зарабатывать!"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data="partner")]
+        ])
+        await send_with_photo(bot, callback, text, kb)
+        return
+
+    text = "<b>📋 Список приглашённых</b>\n\n"
+    for i, user in enumerate(referred_users[:20], 1):  # Show max 20 users
+        status = "✅ Активен" if user["is_active"] else "❌ Не активен"
+        paid_status = "💳 Оплатил" if user["has_paid"] else "🆓 Бесплатный"
+        reg_date = format_timestamp(user["registration_date"])
+        bonus_days = user["bonus_days_awarded"]
+
+        text += (
+            f"<b>{i}. User ID: {user['user_id']}</b>\n"
+            f"   {status} | {paid_status}\n"
+            f"   📅 Регистрация: {reg_date}\n"
+            f"   🎁 Бонусных дней: {bonus_days}\n\n"
+        )
+
+    if len(referred_users) > 20:
+        text += f"... и ещё {len(referred_users) - 20} пользователей\n"
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="partner")]
+    ])
+
+    await send_with_photo(bot, callback, text, kb)
 
 
 @router.callback_query(F.data == "payout_request")
 async def cb_payout_request(callback: CallbackQuery, bot: Bot, state: FSMContext):
     await safe_answer(callback)
     user_id = callback.from_user.id
-    
+
     balance_info = await get_referral_balance(user_id)
     
     if balance_info["balance"] < MIN_PAYOUT:
@@ -98,7 +149,7 @@ async def cb_payout_request(callback: CallbackQuery, bot: Bot, state: FSMContext
         return
     
     # Предлагаем варианты вывода
-    possible_amounts = [400, 480, 560, 640, 720, 800, 880, 960, 1040, 1120, 1200]
+    possible_amounts = [200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
     available_amounts = [amt for amt in possible_amounts if amt <= balance_info["balance"]]
     
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

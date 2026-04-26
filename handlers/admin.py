@@ -32,6 +32,8 @@ from database import (
     create_promo_code, get_all_promo_codes, delete_promo_code, validate_promo_code,
     has_trial_used, get_db,
     get_key_errors, get_key_errors_count, delete_key_error, get_user_key_errors,
+    log_admin_action, get_admin_logs,
+    ban_user, unban_user, add_manual_days,
 )
 from states import AdminFlow
 from utils import safe_answer
@@ -50,34 +52,25 @@ def _is_admin(uid: int) -> bool:
 
 def _main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        # Row 1: Quick Stats
+        # Row 1: Main
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
-         InlineKeyboardButton(text="📈 Детали", callback_data="admin_stats_ext")],
-        # Row 2: Users
-        [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users:0"),
-         InlineKeyboardButton(text="📋 Юзеры+Ключи", callback_data="admin_users_ext:0")],
-        # Row 3: Keys & Errors
+         InlineKeyboardButton(text=" Пользователи", callback_data="admin_users:0")],
+        # Row 2: Keys & Payments
         [InlineKeyboardButton(text="🗝 Все ключи", callback_data="admin_all_keys:0"),
-         InlineKeyboardButton(text="❌ Ошибки ключей", callback_data="admin_key_errors:0")],
-        # Row 4: Search & Financial
-        [InlineKeyboardButton(text="� Поиск", callback_data="admin_search"),
-         InlineKeyboardButton(text="� Платежи", callback_data="admin_payments")],
-        # Row 5: Financial
-        [InlineKeyboardButton(text="� Возвраты", callback_data="admin_refunds"),
-         InlineKeyboardButton(text="🎁 Рефералы", callback_data="admin_referrals")],
-        # Row 6: Marketing & Broadcast
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-        # Row 7: Exports
-        [InlineKeyboardButton(text="📥 Пользователи CSV", callback_data="admin_export_csv"),
-         InlineKeyboardButton(text="📥 Ключи CSV", callback_data="admin_export_keys_csv")],
-        # Row 8: Promo & System
+         InlineKeyboardButton(text="💳 Платежи", callback_data="admin_payments")],
+        # Row 3: Actions
+        [InlineKeyboardButton(text="🔍 Поиск", callback_data="admin_search"),
+         InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
+        # Row 4: Financial
+        [InlineKeyboardButton(text="💰 Финансы", callback_data="admin_finance"),
+         InlineKeyboardButton(text="💳 Возвраты", callback_data="admin_refunds")],
+        # Row 5: Promo & Logs
         [InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin_promo_codes"),
-         InlineKeyboardButton(text="⚙️ Система", callback_data="admin_system")],
-        # Row 9: Mass Actions
-        [InlineKeyboardButton(text="🎁 Выдать всем пробник (3д)", callback_data="admin_mass_trial"),
-         InlineKeyboardButton(text="🎁 Пробник 5 дней всем", callback_data="admin_mass_trial_5d")],
-        # Row 10: Maintenance
-        [InlineKeyboardButton(text="🧹 Очистка", callback_data="admin_cleanup")],
+         InlineKeyboardButton(text="❌ Ошибки ключей", callback_data="admin_key_errors:0")],
+        # Row 6: Settings & Export
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings"),
+         InlineKeyboardButton(text="📥 Экспорт CSV", callback_data="admin_export_csv")],
+        [InlineKeyboardButton(text="📋 Логи админа", callback_data="admin_logs:0")],
     ])
 
 
@@ -101,9 +94,12 @@ def _user_kb(user_id: int) -> InlineKeyboardMarkup:
         # Row 4: Grant Key & Refund
         [InlineKeyboardButton(text="🆕 Выдать ключ", callback_data=f"admin_grant_key:{user_id}"),
          InlineKeyboardButton(text="💰 Возврат", callback_data=f"admin_refund_user:{user_id}")],
-        # Row 5: Danger zone
+        # Row 5: Ban & Days
+        [InlineKeyboardButton(text="🚫 Забанить", callback_data=f"admin_ban_user:{user_id}"),
+         InlineKeyboardButton(text="➕ Добавить дни", callback_data=f"admin_add_days:{user_id}")],
+        # Row 6: Danger zone
         [InlineKeyboardButton(text="🗑 Удалить пользователя", callback_data=f"admin_del_user:{user_id}")],
-        # Row 6: Navigation
+        # Row 7: Navigation
         [InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")],
     ])
 
@@ -1017,11 +1013,30 @@ async def cb_user_payments(callback: CallbackQuery):
 # ── Export CSV ─────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_export_csv")
-async def cb_export_csv(callback: CallbackQuery, bot: Bot):
+async def cb_export_csv(callback: CallbackQuery):
     if not _is_admin(callback.from_user.id):
         await safe_answer(callback, "Нет доступа.", alert=True); return
     await safe_answer(callback)
-    await callback.message.edit_text("⏳ Генерирую CSV...", reply_markup=_back_kb())
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_export_users_csv")],
+        [InlineKeyboardButton(text="🗝 Ключи", callback_data="admin_export_keys_csv")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_menu")],
+    ])
+    
+    await callback.message.edit_text(
+        "📥 <b>Выберите что экспортировать:</b>",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@router.callback_query(F.data == "admin_export_users_csv")
+async def cb_export_users_csv(callback: CallbackQuery, bot: Bot):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+    await callback.message.edit_text("⏳ Генерирую CSV пользователей...", reply_markup=_back_kb())
     csv_text = await get_all_users_csv()
     date_str = datetime.now().strftime("%Y%m%d_%H%M")
     filename = f"bymevpn_users_{date_str}.csv"
@@ -1032,7 +1047,7 @@ async def cb_export_csv(callback: CallbackQuery, bot: Bot):
         caption=f"📥 Экспорт пользователей ByMeVPN\n{datetime.now().strftime('%d.%m.%Y %H:%M')}",
     )
     await callback.message.edit_text(
-        "✅ CSV отправлен выше.", reply_markup=_back_kb()
+        "✅ CSV пользователей отправлен выше.", reply_markup=_back_kb()
     )
 
 
@@ -2095,142 +2110,40 @@ async def cb_promo_codes(callback: CallbackQuery):
     if not _is_admin(callback.from_user.id):
         await safe_answer(callback, "Нет доступа.", alert=True); return
     await safe_answer(callback)
-    
+
     promo_codes = await get_all_promo_codes()
-    
+
     text = "🎁 <b>Управление промокодами</b>\n\n"
-    
+
     if promo_codes:
         text += "<b>Активные промокоды:</b>\n"
         for p in promo_codes[:10]:
             status = "✅" if p["is_active"] else "❌"
             expiry_str = fmt_date(p["expires_at"])[:10]
             uses = f"{p['uses_count']}/{p['max_uses']}" if p['max_uses'] < 999999 else f"{p['uses_count']}/∞"
-            text += f"{status} <code>{p['code']}</code> — {p['discount_percent']}% (исп. {uses}) до {expiry_str}\n"
+
+            if p["promo_type"] == "percent":
+                value_text = f"{p['discount_value']}%"
+            elif p["promo_type"] == "fixed_rub":
+                value_text = f"{p['discount_value']} ₽"
+            elif p["promo_type"] == "free_days":
+                value_text = f"+{p['discount_value']} дней"
+            else:
+                value_text = str(p['discount_value'])
+
+            tariff_text = f" (Тариф: {p['tariff_binding']} мес.)" if p['tariff_binding'] else ""
+
+            text += f"{status} <code>{p['code']}</code> — {value_text}{tariff_text} (исп. {uses}) до {expiry_str}\n"
     else:
         text += "Промокодов пока нет."
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo_create")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_promo_codes")],
         [InlineKeyboardButton(text="◀️ Главное меню", callback_data="admin_menu")]
     ])
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-
-
-@router.callback_query(F.data == "admin_promo_create")
-async def cb_promo_create_start(callback: CallbackQuery, state: FSMContext):
-    """Start creating promo code."""
-    if not _is_admin(callback.from_user.id):
-        await safe_answer(callback, "Нет доступа.", alert=True); return
-    await safe_answer(callback)
-    
-    await state.set_state(AdminFlow.promo_code_create)
-    await callback.message.edit_text(
-        "🎁 <b>Создание промокода</b>\n\n"
-        "Введите код промокода (например: SALE20, BONUS10):\n\n"
-        "Требования:\n"
-        "• Только буквы и цифры\n"
-        "• Минимум 4 символа\n"
-        "• Будет сохранён в верхнем регистре",
-        parse_mode="HTML", reply_markup=_back_kb()
-    )
-
-
-@router.message(StateFilter(AdminFlow.promo_code_create))
-async def receive_promo_code(message: Message, state: FSMContext):
-    """Receive promo code and ask for discount."""
-    if not _is_admin(message.from_user.id):
-        return
-    
-    code = message.text.strip().upper() if message.text else ""
-    
-    if len(code) < 4:
-        await message.answer("❌ Код должен быть минимум 4 символа.")
-        return
-    
-    if not code.isalnum():
-        await message.answer("❌ Код должен содержать только буквы и цифры.")
-        return
-    
-    existing = await validate_promo_code(code)
-    if existing:
-        await message.answer("❌ Такой промокод уже существует.")
-        await state.clear()
-        return
-    
-    await state.update_data(promo_code=code)
-    await state.set_state(AdminFlow.promo_code_discount)
-    
-    await message.answer(
-        f"🎁 Код: <code>{code}</code>\n\n"
-        "Введите размер скидки в процентах (например: 10, 20, 50):",
-        parse_mode="HTML", reply_markup=_back_kb()
-    )
-
-
-@router.message(StateFilter(AdminFlow.promo_code_discount))
-async def receive_promo_discount(message: Message, state: FSMContext):
-    """Receive discount and ask for max uses."""
-    if not _is_admin(message.from_user.id):
-        return
-    
-    try:
-        discount = int(message.text.strip())
-        if discount < 1 or discount > 100:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Введите число от 1 до 100.")
-        return
-    
-    await state.update_data(promo_discount=discount)
-    await state.set_state(AdminFlow.promo_code_uses)
-    
-    await message.answer(
-        f"🎁 Скидка: {discount}%\n\n"
-        "Введите максимальное количество использований\n"
-        "(например: 1, 10, 100, или 0 для неограниченного):",
-        reply_markup=_back_kb()
-    )
-
-
-@router.message(StateFilter(AdminFlow.promo_code_uses))
-async def receive_promo_uses(message: Message, bot: Bot, state: FSMContext):
-    """Receive max uses and create promo code."""
-    if not _is_admin(message.from_user.id):
-        return
-    
-    try:
-        max_uses = int(message.text.strip())
-        if max_uses < 0:
-            max_uses = 999999
-    except ValueError:
-        max_uses = 1
-    
-    data = await state.get_data()
-    await state.clear()
-    
-    code = data.get("promo_code")
-    discount = data.get("promo_discount")
-    
-    success = await create_promo_code(code, discount, max_uses if max_uses > 0 else 999999, 30)
-    
-    if success:
-        await message.answer(
-            f"✅ <b>Промокод создан!</b>\n\n"
-            f"🎁 Код: <code>{code}</code>\n"
-            f"💰 Скидка: {discount}%\n"
-            f"🔄 Использований: {'∞' if max_uses == 0 or max_uses >= 999999 else max_uses}\n"
-            f"⏳ Действует: 30 дней\n\n"
-            f"Отправьте код пользователям для получения скидки!",
-            parse_mode="HTML", reply_markup=_back_kb()
-        )
-    else:
-        await message.answer(
-            "❌ Не удалось создать промокод.",
-            reply_markup=_back_kb()
-        )
 
 
 # ── Mass trial distribution ───────────────────────────────────────────────────
@@ -2515,15 +2428,251 @@ async def cb_admin_key_errors(callback: CallbackQuery, bot: Bot):
     nav_row = []
     if offset > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_key_errors:{max(0, offset - 20)}"))
-    if offset + 20 < total_count:
+    if len(errors) == 20:  # Assume there might be more
         nav_row.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin_key_errors:{offset + 20}"))
     if nav_row:
         kb_rows.append(nav_row)
-
     kb_rows.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")])
 
     await callback.message.edit_text(
         text,
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin Logs
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("admin_logs:"))
+async def cb_admin_logs(callback: CallbackQuery, bot: Bot):
+    """Show admin action logs."""
+    await safe_answer(callback)
+    offset = int(callback.data.split(":")[1])
+
+    logs = await get_admin_logs(limit=20, offset=offset)
+
+    if not logs:
+        await callback.message.edit_text(
+            "📋 <b>Логи админа</b>\n\nЗаписей нет.",
+            reply_markup=_back_kb()
+        )
+        return
+
+    text = "📋 <b>Логи действий админа</b>\n\n"
+    for log in logs:
+        log_date = datetime.fromtimestamp(log["created"]).strftime("%d.%m.%Y %H:%M")
+        target = f"User: {log['target_user_id']}" if log['target_user_id'] else ""
+        text += (
+            f"🆔 Admin: {log['admin_id']}\n"
+            f"📅 {log_date}\n"
+            f"🔧 {log['action_type']}\n"
+            f"📝 {log['action_details'][:80]}...\n"
+            f"{target}\n"
+            f"─────────────\n"
+        )
+
+    # Pagination buttons
+    kb_rows = []
+    nav_row = []
+    if offset > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_logs:{max(0, offset - 20)}"))
+    if len(logs) == 20:  # Assume there might be more
+        nav_row.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin_logs:{offset + 20}"))
+    if nav_row:
+        kb_rows.append(nav_row)
+    kb_rows.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")])
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    )
+
+
+# ---------------------------------------------------------------------------
+# User Ban/Unban
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("admin_ban_user:"))
+async def cb_admin_ban_user(callback: CallbackQuery, state: FSMContext):
+    """Start user ban flow."""
+    await safe_answer(callback)
+    user_id = int(callback.data.split(":")[1])
+    await state.update_data(ban_target_user_id=user_id)
+    await state.set_state(AdminFlow.ban_reason)
+
+    await callback.message.edit_text(
+        f"🚫 <b>Бан пользователя {user_id}</b>\n\n"
+        "Введите причину бана (или отправьте /skip для бана без причины):",
+        reply_markup=_back_kb()
+    )
+
+
+@router.message(AdminFlow.ban_reason)
+async def msg_ban_reason(message: Message, state: FSMContext):
+    """Handle ban reason input."""
+    reason = message.text.strip() if not message.text.startswith("/skip") else None
+    data = await state.get_data()
+    user_id = data["ban_target_user_id"]
+
+    success = await ban_user(user_id, reason)
+
+    if success:
+        await log_admin_action(
+            admin_id=message.from_user.id,
+            action_type="ban_user",
+            action_details=f"Banned user {user_id}, reason: {reason}",
+            target_user_id=user_id
+        )
+        await message.answer(
+            f"✅ Пользователь {user_id} забанен.",
+            reply_markup=_main_kb()
+        )
+    else:
+        await message.answer("❌ Ошибка бана пользователя.")
+
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("admin_unban_user:"))
+async def cb_admin_unban_user(callback: CallbackQuery):
+    """Unban user."""
+    await safe_answer(callback)
+    user_id = int(callback.data.split(":")[1])
+
+    success = await unban_user(user_id)
+
+    if success:
+        await log_admin_action(
+            admin_id=callback.from_user.id,
+            action_type="unban_user",
+            action_details=f"Unbanned user {user_id}",
+            target_user_id=user_id
+        )
+        await callback.message.edit_text(
+            f"✅ Пользователь {user_id} разбанен.",
+            reply_markup=_back_kb()
+        )
+    else:
+        await callback.message.edit_text("❌ Ошибка разбана пользователя.")
+
+
+# ---------------------------------------------------------------------------
+# Manual Days Addition
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("admin_add_days:"))
+async def cb_admin_add_days(callback: CallbackQuery, state: FSMContext):
+    """Start manual days addition flow."""
+    await safe_answer(callback)
+    user_id = int(callback.data.split(":")[1])
+    await state.update_data(add_days_target_user_id=user_id)
+    await state.set_state(AdminFlow.add_days_value)
+
+    await callback.message.edit_text(
+        f"➕ <b>Добавление дней пользователю {user_id}</b>\n\n"
+        "Введите количество дней для добавления:",
+        reply_markup=_back_kb()
+    )
+
+
+@router.message(AdminFlow.add_days_value)
+async def msg_add_days_value(message: Message, state: FSMContext):
+    """Handle days value input."""
+    try:
+        days = int(message.text.strip())
+        if days < 1 or days > 3650:
+            await message.answer("❌ Количество дней должно быть от 1 до 3650.")
+            return
+
+        data = await state.get_data()
+        user_id = data["add_days_target_user_id"]
+
+        success = await add_manual_days(user_id, days, message.from_user.id)
+
+        if success:
+            await log_admin_action(
+                admin_id=message.from_user.id,
+                action_type="add_manual_days",
+                action_details=f"Added {days} days to user {user_id}",
+                target_user_id=user_id
+            )
+            await message.answer(
+                f"✅ Добавлено {days} дней пользователю {user_id}.",
+                reply_markup=_main_kb()
+            )
+        else:
+            await message.answer(
+                "❌ У пользователя нет ключей. Сначала выдайте ключ.",
+                reply_markup=_back_kb()
+            )
+
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите число.")
+
+
+# ---------------------------------------------------------------------------
+# Finance Statistics
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "admin_finance")
+async def cb_admin_finance(callback: CallbackQuery, bot: Bot):
+    """Show detailed finance statistics."""
+    await safe_answer(callback)
+
+    stats = await get_admin_stats()
+    payment_stats = await get_payment_stats()
+    refund_stats = await get_refund_stats()
+
+    text = (
+        "💰 <b>Финансовая статистика</b>\n\n"
+        f"📊 <b>Общая выручка:</b> {stats['total_revenue']} ₽\n"
+        f"📅 <b>Выручка за сегодня:</b> {stats['today_revenue']} ₽\n"
+        f"💳 <b>Всего платежей:</b> {stats['total_payments']}\n"
+        f"👥 <b>Всего пользователей:</b> {stats['total_users']}\n"
+        f"✅ <b>Активных пользователей:</b> {stats['active_users']}\n"
+        f"🗝 <b>Активных ключей:</b> {stats['active_keys']}\n\n"
+        f"💸 <b>Всего возвратов:</b> {refund_stats.get('total_refunds', 0)} ₽\n"
+        f"📈 <b>Количество возвратов:</b> {refund_stats.get('refund_count', 0)}\n"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb)
+
+
+# ---------------------------------------------------------------------------
+# System Settings
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "admin_settings")
+async def cb_admin_settings(callback: CallbackQuery, bot: Bot):
+    """Show system settings."""
+    await safe_answer(callback)
+
+    from constants import PRICE_CONFIG, TRIAL_DAYS, REF_BONUS_DAYS
+    from config import SUPPORT_USERNAME, ADMIN_IDS
+
+    text = (
+        "⚙️ <b>Системные настройки</b>\n\n"
+        f"📊 <b>Тарифы:</b>\n"
+        f"   1 месяц: {PRICE_CONFIG[1][0]} ₽ ({PRICE_CONFIG[1][1]} дней)\n"
+        f"   3 месяца: {PRICE_CONFIG[3][0]} ₽ ({PRICE_CONFIG[3][1]} дней)\n"
+        f"   6 месяцев: {PRICE_CONFIG[6][0]} ₽ ({PRICE_CONFIG[6][1]} дней)\n"
+        f"   12 месяцев: {PRICE_CONFIG[12][0]} ₽ ({PRICE_CONFIG[12][1]} дней)\n\n"
+        f"🎁 <b>Бонусы:</b>\n"
+        f"   Пробный период: {TRIAL_DAYS} дней\n"
+        f"   Реферальный бонус: {REF_BONUS_DAYS} дней\n\n"
+        f"👨‍💼 <b>Админы:</b> {', '.join(map(str, ADMIN_IDS))}\n"
+        f"📞 <b>Поддержка:</b> {SUPPORT_USERNAME}\n\n"
+        f"<i>Для изменения настроек отредактируйте файлы constants.py и config.py на сервере.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="admin_menu")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb)

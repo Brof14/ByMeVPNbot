@@ -227,20 +227,21 @@ async def _process_payment(bot: Bot, payment_id: str) -> None:
         # Log payment completion
         log_payment_completed(user_id, amount_rub, "yookassa", days)
         
-        # Начисляем бонус рефереалу за первую оплату (80₽)
+        # Начисляем бонус рефереалу за первую оплату (50₽)
         try:
             referrer_id = await get_referrer(user_id)
             if referrer_id:
-                bonus_added = await add_referral_earning(referrer_id, user_id, 80, payment_id)
+                from database import add_referral_earning
+                bonus_added = await add_referral_earning(referrer_id, user_id, 50, payment_id)
                 if bonus_added:
-                    logger.info("Referral bonus 80₽ added for referrer %d from user %d YooKassa payment", referrer_id, user_id)
-                    # Отправляем уведомление рефереалу
+                    logger.info("Referral bonus 50₽ added for referrer %d from user %d YooKassa payment", referrer_id, user_id)
+                    # Уведомляем реферера
                     try:
                         await bot.send_message(
                             referrer_id,
-                            f"🎉 <b>Получен бонус!</b>\n\n"
-                            f"Ваш друг (ID: {user_id}) оформил подписку через ЮKassa.\n"
-                            f"Начислено: +80 ₽\n"
+                            f"🎉 <b>Поздравляем!</b>\n\n"
+                            f"Ваш приглашённый оформил платную подписку.\n"
+                            f"Начислено: +50 ₽\n"
                             f"Текущий баланс обновлён в партнёрской программе."
                         )
                     except Exception as notify_error:

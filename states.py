@@ -18,9 +18,13 @@ class AdminFlow(StatesGroup):
     refund_amount = State()      # waiting for refund amount
     refund_reason = State()      # waiting for refund reason
     payment_search = State()     # waiting for user ID to search payments
-    promo_code_create = State()  # waiting for promo code
-    promo_code_discount = State()  # waiting for discount percent
-    promo_code_uses = State()    # waiting for max uses count
+    promo_code = State()         # waiting for promo code name
+    promo_type = State()         # waiting for promo type selection
+    promo_value = State()        # waiting for discount value
+    promo_uses = State()         # waiting for max uses count
+    promo_days = State()         # waiting for validity period in days
+    ban_reason = State()         # waiting for ban reason
+    add_days_value = State()     # waiting for days to add to user
 
 
 class EmailAuth(StatesGroup):
