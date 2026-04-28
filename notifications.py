@@ -29,8 +29,8 @@ def get_day_word(days: int) -> str:
         return "дней"
 
 
-def generate_promo_code(length: int = 8) -> str:
-    """Generate a random promo code."""
+def generate_promo_code(length: int = 5) -> str:
+    """Generate a short random promo code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
@@ -38,39 +38,50 @@ async def get_or_create_renewal_promo(user_id: int) -> str:
     """
     Get existing renewal promo code for user or create a new one.
 
-    Creates a 30% discount promo code valid for 7 days.
+    Creates a short 30% discount promo code valid for 7 days with multiple uses.
+    Uses a shared code approach: checks for existing active promo codes and reuses them.
     """
-    # Try to find existing active promo code for this user
-    # We'll use a naming convention: RENEW{user_id}
-    code = f"RENEW{user_id}"
+    # Try to find existing active 30% promo codes that are valid
+    from database import get_all_promo_codes
+    promo_codes = await get_all_promo_codes()
 
-    existing = await validate_promo_code(code)
-    if existing and existing["is_active"]:
-        return code
+    # Look for an existing 30% discount promo code that's active and valid
+    for promo in promo_codes:
+        if (promo["is_active"] and
+            promo["promo_type"] == "percent" and
+            promo["discount_value"] == 30 and
+            promo["uses_count"] < promo["max_uses"]):
+            # Check if still valid
+            import time
+            if promo["expires_at"] > int(time.time()):
+                return promo["code"]
 
-    # Create new promo code: 30% discount, 7 days validity, 1 use
+    # No suitable existing promo code, create a new one
+    # Short code (5 chars), 30% discount, 7 days validity, 10 uses
+    code = generate_promo_code(5)
+
     success = await create_promo_code(
         code=code,
         promo_type="percent",
         discount_value=30,
-        max_uses=1,
+        max_uses=10,
         valid_days=7
     )
 
     if success:
-        logger.info("Created renewal promo code %s for user %d", code, user_id)
+        logger.info("Created shared renewal promo code %s (30%%, 10 uses, 7 days)", code)
         return code
     else:
-        # Fallback to random code if naming convention fails
-        random_code = generate_promo_code()
+        # Fallback with different code if creation fails
+        code = generate_promo_code(6)
         await create_promo_code(
-            code=random_code,
+            code=code,
             promo_type="percent",
             discount_value=30,
-            max_uses=1,
+            max_uses=10,
             valid_days=7
         )
-        return random_code
+        return code
 
 
 async def _send_urgent_notification(bot: Bot, item: dict) -> None:

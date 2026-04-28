@@ -453,7 +453,7 @@ async def cb_trial_ref(callback: CallbackQuery, bot: Bot, state: FSMContext):
 async def cb_about(callback: CallbackQuery, bot: Bot):
     await safe_answer(callback)
     text = (
-        "ByMeVPN был создан в 2022 году.\n\n"
+        "ByMeVPN был создан в марте 2026 года.\n\n"
         "⚡️ Наш сервис работает на быстром и безопасном протоколе VLESS, поверх которого используется дополнительная маскировка трафика. Благодаря этому ByMeVPN умело обходит блокировки и работает во всех странах.\n\n"
         "👨‍💻 Мы используем специальные приложения для всех платформ. Начало работы с нашим сервисом максимально простое и не требует никаких специальных умений, не нужны никакие сложные инструкции.\n\n"
         "🔒 В нашем сервисе весь ваш трафик полностью зашифрован. Мы не храним логи и не видим, на какие сайты вы заходите. И никто не увидит.\n\n"
@@ -463,7 +463,7 @@ async def cb_about(callback: CallbackQuery, bot: Bot):
     # Создаем клавиатуру с кнопками "Назад" и "Поддержка" в одном ряду
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu"), 
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu"),
          InlineKeyboardButton(text="Поддержка", url="https://t.me/ByMeVPN_support_bot")]
     ])
     await send_with_photo(bot, callback, text, kb)
