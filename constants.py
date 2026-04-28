@@ -1,26 +1,40 @@
 """
-Константы и общие настройки для ByMeVPN бота.
+Constants and General Settings for ByMeVPN Bot
+
+This module contains all constant values, pricing configuration,
+and utility functions for formatting and validation.
 """
+
 from datetime import datetime
 
-# Временные константы
-TRIAL_DAYS = 3
-SECONDS_PER_DAY = 86400
-CAPTION_LIMIT = 1024
+# ============================================================================
+# Time Constants
+# ============================================================================
+TRIAL_DAYS = 3  # Number of free trial days
+SECONDS_PER_DAY = 86400  # Seconds in a day
+CAPTION_LIMIT = 1024  # Telegram caption character limit
 
-# URL и ссылки
+# ============================================================================
+# URLs and Links
+# ============================================================================
 LOGO_URL = "https://i.ibb.co/rG9F5PCS/logo.jpg"
 SUPPORT_URL_TEMPLATE = "https://t.me/ByMeVPN_support_bot?text={}"
 
-# Цены и сроки (в днях)
-PRICE_CONFIG = {    
-    1:  (99, 30),    # 1 месяц - 99 руб, 30 дней
-    3:  (237, 120),  # 3 месяца + 1 месяц подарок - 237 руб (79 руб/мес), 120 дней
-    6:  (414, 240),  # 6 месяцев + 2 месяца подарок - 414 руб (69 руб/мес), 240 дней
-    12: (708, 450),  # 1 год + 3 месяца подарок - 708 руб (59 руб/мес), 450 дней
+# ============================================================================
+# Pricing Configuration
+# Format: {months: (price_rub, total_days)}
+# Includes bonus days for longer subscriptions
+# ============================================================================
+PRICE_CONFIG = {
+    1:  (99, 30),    # 1 month - 99 rub, 30 days
+    3:  (237, 120),  # 3 months + 1 month bonus - 237 rub (79 rub/mo), 120 days
+    6:  (414, 240),  # 6 months + 2 months bonus - 414 rub (69 rub/mo), 240 days
+    12: (708, 450),  # 1 year + 3 months bonus - 708 rub (59 rub/mo), 450 days
 }
 
-# Метки для периодов
+# ============================================================================
+# Period Labels (for display in UI)
+# ============================================================================
 PERIOD_LABELS = {
     1:  "1 мес.",
     3:  "3 мес.",
@@ -28,30 +42,85 @@ PERIOD_LABELS = {
     12: "1 год",
 }
 
-# Допустимые лимиты устройств
-VALID_DEVICE_LIMITS = (1, 2, 5)
+# ============================================================================
+# Device Limits
+# ============================================================================
+VALID_DEVICE_LIMITS = (1, 2, 5)  # Allowed device count limits
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
 
 def get_price_for_months(months: int) -> tuple[int, int]:
-    """Получить цену и количество дней для указанного количества месяцев."""
+    """
+    Get price and total days for a given subscription period.
+
+    Args:
+        months: Number of months (1, 3, 6, or 12)
+
+    Returns:
+        Tuple of (price_in_rub, total_days)
+        Defaults to (149, 30) for invalid month values
+    """
     return PRICE_CONFIG.get(months, (149, 30))
 
+
 def get_period_label(months: int) -> str:
-    """Получить метку периода для указанного количества месяцев."""
+    """
+    Get display label for a subscription period.
+
+    Args:
+        months: Number of months
+
+    Returns:
+        String label (e.g., "1 мес.", "3 мес.", "1 год")
+        Defaults to "{months} мес." for unknown values
+    """
     return PERIOD_LABELS.get(months, f"{months} мес.")
 
+
 def validate_device_limit(limit: int) -> int:
-    """Валидировать и нормализовать лимит устройств."""
+    """
+    Validate and normalize device limit.
+
+    Args:
+        limit: Requested device limit
+
+    Returns:
+        Validated device limit (1, 2, or 5)
+        Defaults to 1 for invalid values
+    """
     return limit if limit in VALID_DEVICE_LIMITS else 1
 
+
 def format_timestamp(ts: int) -> str:
-    """Отформатировать timestamp в дату."""
+    """
+    Format Unix timestamp to readable date string.
+
+    Args:
+        ts: Unix timestamp
+
+    Returns:
+        Date string in format "DD.MM.YYYY"
+        Returns "—" on error
+    """
     try:
         return datetime.fromtimestamp(ts).strftime("%d.%m.%Y")
     except Exception:
         return "—"
 
+
 def format_days_left(expiry: int) -> str:
-    """Отформатировать оставшиеся дни."""
+    """
+    Format remaining time until key expiry.
+
+    Args:
+        expiry: Unix timestamp of expiry date
+
+    Returns:
+        String like "X дн." or "X ч." or "истёк"
+    """
     import time
     left = expiry - int(time.time())
     if left <= 0:

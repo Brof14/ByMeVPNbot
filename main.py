@@ -1,3 +1,17 @@
+"""
+ByMeVPN Telegram Bot - Main Entry Point
+
+This is the main entry point for the VPN bot. It initializes all components
+including the bot, database, routers, webhook server, and starts polling.
+
+Components:
+- Telegram Bot (aiogram)
+- Database (SQLite via aiosqlite)
+- 3x-UI Integration (for VPN key management)
+- YooKassa Webhook Server (for payment processing)
+- Notification Scheduler (for expiry reminders)
+"""
+
 import asyncio
 import logging
 import sys
@@ -20,12 +34,14 @@ from handlers import (
 from subscription import router as subscription_router
 from webhook import start_webhook_server
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
+# Reduce noise from external libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("aiogram").setLevel(logging.INFO)
 
@@ -33,17 +49,37 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    """
+    Main bot initialization and startup function.
+
+    This function performs the following steps:
+    1. Validates BOT_TOKEN configuration
+    2. Preloads static data for fast responses
+    3. Initializes the database
+    4. Tests 3x-UI connection
+    5. Creates bot instance and dispatcher
+    6. Registers all message handlers (routers)
+    7. Starts background tasks (scheduler, webhook)
+    8. Begins polling for Telegram updates
+    9. Handles graceful shutdown
+
+    Raises:
+        SystemExit: If BOT_TOKEN is not configured
+    """
+    # Validate configuration
     if not BOT_TOKEN:
         logger.critical("BOT_TOKEN is not set in .env")
         sys.exit(1)
 
-    # Предзагрузка статических данных для мгновенных ответов
+    # Preload static data for instant responses
     await preload_static_data()
     logger.info("Static data preloaded")
 
+    # Initialize database
     await init_db()
     logger.info("Database ready")
 
+    # Test 3x-UI connection
     from xui import test_xui_connection
     xui_connected, xui_message = await test_xui_connection()
     if xui_connected:
@@ -51,28 +87,35 @@ async def main() -> None:
     else:
         logger.error("3x-UI connection failed: %s", xui_message)
 
+    # Create bot instance with HTML parse mode
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
 
+    # Register all routers (message handlers)
     routers = [
         start_router, buy_router, subscription_router, keys_router,
         partner_router, guide_router, legal_router,
         admin_router, auth_router, fallback_router
     ]
-    
+
     for router in routers:
         dp.include_router(router)
 
     logger.info("All routers registered")
+
+    # Clear any pending webhook updates
     await bot.delete_webhook(drop_pending_updates=True)
 
+    # Start background tasks
     scheduler_task = asyncio.create_task(start_notification_scheduler(bot))
     webhook_task = asyncio.create_task(start_webhook_server(bot))
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
+    # Start polling for updates
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        # Graceful shutdown
         scheduler_task.cancel()
         webhook_task.cancel()
         await bot.session.close()
