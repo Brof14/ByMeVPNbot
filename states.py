@@ -23,6 +23,7 @@ class AdminFlow(StatesGroup):
     promo_value = State()        # waiting for discount value
     promo_uses = State()         # waiting for max uses count
     promo_days = State()         # waiting for validity period in days
+    promo_edit_uses = State()    # waiting for new max uses value
     ban_reason = State()         # waiting for ban reason
     add_days_value = State()     # waiting for days to add to user
 

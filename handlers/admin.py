@@ -2115,8 +2115,10 @@ async def cb_promo_codes(callback: CallbackQuery):
 
     text = "🎁 <b>Управление промокодами</b>\n\n"
 
+    kb_rows = []
+
     if promo_codes:
-        text += "<b>Активные промокоды:</b>\n"
+        text += "<b>Промокоды:</b>\n"
         for p in promo_codes[:10]:
             status = "✅" if p["is_active"] else "❌"
             expiry_str = fmt_date(p["expires_at"])[:10]
@@ -2134,16 +2136,189 @@ async def cb_promo_codes(callback: CallbackQuery):
             tariff_text = f" (Тариф: {p['tariff_binding']} мес.)" if p['tariff_binding'] else ""
 
             text += f"{status} <code>{p['code']}</code> — {value_text}{tariff_text} (исп. {uses}) до {expiry_str}\n"
+            kb_rows.append([InlineKeyboardButton(text=f"{p['code']}", callback_data=f"admin_promo_manage:{p['code']}")])
     else:
         text += "Промокодов пока нет."
 
+    kb_rows.append([InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo_create")])
+    kb_rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_promo_codes")])
+    kb_rows.append([InlineKeyboardButton(text="◀️ Главное меню", callback_data="admin_menu")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ── Promo Code Management (Individual) ─────────────────────────────────────
+
+@router.callback_query(F.data.startswith("admin_promo_manage:"))
+async def cb_promo_manage(callback: CallbackQuery):
+    """Show individual promo code management options."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+
+    code = callback.data.split(":")[1]
+    promo = await validate_promo_code(code)
+
+    if not promo:
+        await callback.message.edit_text("❌ Промокод не найден.", reply_markup=_back_kb())
+        return
+
+    status = "✅ Активен" if promo["is_active"] else "❌ Неактивен"
+    expiry_str = fmt_date(promo["expires_at"])[:10]
+    uses = f"{promo['uses_count']}/{promo['max_uses']}" if promo['max_uses'] < 999999 else f"{promo['uses_count']}/∞"
+
+    if promo["promo_type"] == "percent":
+        value_text = f"{promo['discount_value']}%"
+    elif promo["promo_type"] == "fixed_rub":
+        value_text = f"{promo['discount_value']} ₽"
+    elif promo["promo_type"] == "free_days":
+        value_text = f"+{promo['discount_value']} дней"
+    else:
+        value_text = str(promo['discount_value'])
+
+    tariff_text = f" (Тариф: {promo['tariff_binding']} мес.)" if promo['tariff_binding'] else ""
+
+    text = (
+        f"🎁 <b>Промокод: {code}</b>\n\n"
+        f"Статус: {status}\n"
+        f"Тип: {value_text}{tariff_text}\n"
+        f"Использований: {uses}\n"
+        f"Истекает: {expiry_str}\n\n"
+        f"<b>Действия:</b>"
+    )
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo_create")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_promo_codes")],
-        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="admin_menu")]
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_promo_delete:{code}")],
+        [InlineKeyboardButton(text="⏳ Продлить на 30 дней", callback_data=f"admin_promo_extend:{code}:30")],
+        [InlineKeyboardButton(text="⏳ Продлить на 90 дней", callback_data=f"admin_promo_extend:{code}:90")],
+        [InlineKeyboardButton(text="🔄 Изменить лимит", callback_data=f"admin_promo_edit_uses:{code}")],
+        [InlineKeyboardButton(text="🔛 Активировать" if not promo["is_active"] else "🔴 Деактивировать",
+                             callback_data=f"admin_promo_toggle:{code}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_promo_codes")]
     ])
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("admin_promo_delete:"))
+async def cb_promo_delete(callback: CallbackQuery):
+    """Delete promo code."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+
+    code = callback.data.split(":")[1]
+    success = await delete_promo_code(code)
+
+    if success:
+        await log_admin_action(
+            admin_id=callback.from_user.id,
+            action_type="delete_promo_code",
+            action_details=f"Deleted promo code {code}"
+        )
+        await callback.message.edit_text(f"✅ Промокод <code>{code}</code> удалён.", reply_markup=_back_kb())
+    else:
+        await callback.message.edit_text("❌ Ошибка удаления промокода.", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data.startswith("admin_promo_extend:"))
+async def cb_promo_extend(callback: CallbackQuery):
+    """Extend promo code validity."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+
+    parts = callback.data.split(":")
+    code = parts[1]
+    days = int(parts[2])
+
+    success = await extend_promo_code(code, days)
+
+    if success:
+        await log_admin_action(
+            admin_id=callback.from_user.id,
+            action_type="extend_promo_code",
+            action_details=f"Extended promo code {code} by {days} days"
+        )
+        await callback.message.edit_text(f"✅ Промокод <code>{code}</code> продлён на {days} дней.", reply_markup=_back_kb())
+    else:
+        await callback.message.edit_text("❌ Ошибка продления промокода.", reply_markup=_back_kb())
+
+
+@router.callback_query(F.data.startswith("admin_promo_edit_uses:"))
+async def cb_promo_edit_uses(callback: CallbackQuery, state: FSMContext):
+    """Start editing promo code max uses."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+
+    code = callback.data.split(":")[1]
+    await state.update_data(promo_edit_code=code)
+    await state.set_state(AdminFlow.promo_edit_uses)
+    await callback.message.edit_text(
+        f"🎁 <b>Изменение лимита для {code}</b>\n\nВведите новый лимит использований (или 999999 для безлимита):",
+        reply_markup=_back_kb()
+    )
+
+
+@router.message(AdminFlow.promo_edit_uses)
+async def msg_promo_edit_uses(message: Message, state: FSMContext):
+    """Handle promo code max uses edit."""
+    try:
+        new_max = int(message.text.strip())
+        if new_max < 1:
+            await message.answer("❌ Минимальное значение: 1.")
+            return
+
+        data = await state.get_data()
+        code = data["promo_edit_code"]
+
+        success = await update_promo_max_uses(code, new_max)
+
+        if success:
+            await log_admin_action(
+                admin_id=message.from_user.id,
+                action_type="update_promo_uses",
+                action_details=f"Updated promo code {code} max uses to {new_max}"
+            )
+            await message.answer(f"✅ Лимит промокода <code>{code}</code> изменён на {new_max}.", reply_markup=_main_kb())
+        else:
+            await message.answer("❌ Ошибка изменения лимита.", reply_markup=_back_kb())
+
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите число.")
+
+
+@router.callback_query(F.data.startswith("admin_promo_toggle:"))
+async def cb_promo_toggle(callback: CallbackQuery):
+    """Toggle promo code active status."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True); return
+    await safe_answer(callback)
+
+    code = callback.data.split(":")[1]
+    promo = await validate_promo_code(code)
+
+    if not promo:
+        await callback.message.edit_text("❌ Промокод не найден.", reply_markup=_back_kb())
+        return
+
+    new_status = not promo["is_active"]
+    success = await toggle_promo_active(code, new_status)
+
+    if success:
+        await log_admin_action(
+            admin_id=callback.from_user.id,
+            action_type="toggle_promo_active",
+            action_details=f"{'Activated' if new_status else 'Deactivated'} promo code {code}"
+        )
+        status_text = "активирован" if new_status else "деактивирован"
+        await callback.message.edit_text(f"✅ Промокод <code>{code}</code> {status_text}.", reply_markup=_back_kb())
+    else:
+        await callback.message.edit_text("❌ Ошибка изменения статуса.", reply_markup=_back_kb())
 
 
 # ── Create Promo Code ────────────────────────────────────────────────────────

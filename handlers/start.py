@@ -371,7 +371,17 @@ async def cb_claim_trial(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "back_to_menu")
 async def cb_back_to_menu(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    """Return to main menu while preserving promo code if active."""
+    # Preserve promo_info if it exists
+    data = await state.get_data()
+    promo_info = data.get("promo_info", {})
+
     await state.clear()
+
+    # Restore promo_info if it was active
+    if promo_info:
+        await state.update_data(promo_info=promo_info)
+
     await safe_answer(callback)
     user_id = callback.from_user.id
     name = callback.from_user.first_name or "друг"

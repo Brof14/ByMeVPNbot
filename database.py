@@ -2359,6 +2359,52 @@ async def delete_promo_code(code: str) -> bool:
         return False
 
 
+async def extend_promo_code(code: str, additional_days: int) -> bool:
+    """Extend promo code validity by additional days."""
+    db = await get_db()
+    try:
+        current_time = int(time.time())
+        await db.execute(
+            "UPDATE promo_codes SET expires_at = expires_at + ? WHERE code=?",
+            (additional_days * 86400, code.upper())
+        )
+        await db.commit()
+        return True
+    except Exception as e:
+        logger.error("Failed to extend promo code: %s", e)
+        return False
+
+
+async def update_promo_max_uses(code: str, new_max_uses: int) -> bool:
+    """Update promo code max uses limit."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE promo_codes SET max_uses = ? WHERE code=?",
+            (new_max_uses, code.upper())
+        )
+        await db.commit()
+        return True
+    except Exception as e:
+        logger.error("Failed to update promo code max uses: %s", e)
+        return False
+
+
+async def toggle_promo_active(code: str, is_active: bool) -> bool:
+    """Activate or deactivate promo code."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE promo_codes SET is_active = ? WHERE code=?",
+            (1 if is_active else 0, code.upper())
+        )
+        await db.commit()
+        return True
+    except Exception as e:
+        logger.error("Failed to toggle promo code active status: %s", e)
+        return False
+
+
 async def log_admin_action(admin_id: int, action_type: str, action_details: str, target_user_id: int = None) -> int:
     """Log admin action for audit trail."""
     db = await get_db()
