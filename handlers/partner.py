@@ -24,7 +24,6 @@ MIN_PAYOUT = 400  # минимальная сумма вывода
 
 def partner_main_kb(link: str) -> "InlineKeyboardMarkup":
     """Клавиатура партнёрской программы"""
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from urllib.parse import quote_plus
 
     share_text = quote_plus(
@@ -123,7 +122,6 @@ async def cb_partner_referrals_list(callback: CallbackQuery, bot: Bot):
     if len(referred_users) > 20:
         text += f"... и ещё {len(referred_users) - 20} пользователей\n"
 
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад", callback_data="partner")]
     ])
@@ -151,8 +149,7 @@ async def cb_payout_request(callback: CallbackQuery, bot: Bot, state: FSMContext
     # Предлагаем варианты вывода
     possible_amounts = [200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
     available_amounts = [amt for amt in possible_amounts if amt <= balance_info["balance"]]
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
     kb_rows = []
     
     # Кнопки с суммами (по 2 в ряд)
@@ -205,10 +202,9 @@ async def cb_payout_amount(callback: CallbackQuery, bot: Bot, state: FSMContext)
     # Создаём заявку на вывод
     try:
         payout_id = await create_payout_request(user_id, amount)
-        
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад к партнёрской программе", callback_data="partner"), 
+            [InlineKeyboardButton(text="Назад к партнёрской программе", callback_data="partner"),
              InlineKeyboardButton(text="Поддержка", url="https://t.me/ByMeVPN_support_bot")]
         ])
         

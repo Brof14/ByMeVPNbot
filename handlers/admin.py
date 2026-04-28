@@ -2146,6 +2146,158 @@ async def cb_promo_codes(callback: CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
+# ── Create Promo Code ────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin_promo_create")
+async def cb_promo_create(callback: CallbackQuery, state: FSMContext):
+    """Start promo code creation flow."""
+    if not _is_admin(callback.from_user.id):
+        await safe_answer(callback, "Нет доступа.", alert=True)
+        return
+
+    await safe_answer(callback)
+    await state.set_state(AdminFlow.promo_code)
+    await callback.message.edit_text(
+        "🎁 <b>Создание промокода</b>\n\nВведите код промокода (минимум 4 символа, только буквы и цифры):",
+        reply_markup=_back_kb()
+    )
+
+
+@router.message(AdminFlow.promo_code)
+async def receive_promo_code(message: Message, state: FSMContext):
+    """Receive promo code string."""
+    code = message.text.strip().upper() if message.text else ""
+    if len(code) < 4:
+        await message.answer("❌ Код должен быть минимум 4 символа.")
+        return
+    if not code.isalnum():
+        await message.answer("❌ Код должен содержать только буквы и цифры.")
+        return
+
+    existing = await validate_promo_code(code)
+    if existing:
+        await message.answer("❌ Такой промокод уже существует.")
+        await state.clear()
+        return
+
+    await state.update_data(promo_code=code)
+    await state.set_state(AdminFlow.promo_type)
+    await message.answer(
+        f"Код: <code>{code}</code>\n\nВыберите тип промокода:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Процент (%)", callback_data="promo_type_percent")],
+            [InlineKeyboardButton(text="Фиксированная сумма (₽)", callback_data="promo_type_fixed")],
+            [InlineKeyboardButton(text="Бесплатные дни", callback_data="promo_type_days")],
+            [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_menu")]
+        ])
+    )
+
+
+@router.callback_query(F.data.startswith("promo_type_"))
+async def cb_promo_type(callback: CallbackQuery, state: FSMContext):
+    """Handle promo type selection."""
+    promo_type = callback.data.split("_")[2]
+    await state.update_data(promo_type=promo_type)
+    await state.set_state(AdminFlow.promo_value)
+
+    if promo_type == "percent":
+        prompt = "Введите процент скидки (например: 10 для 10%):"
+    elif promo_type == "fixed":
+        prompt = "Введите сумму скидки в рублях (например: 50):"
+    else:  # days
+        prompt = "Введите количество бесплатных дней (например: 7):"
+
+    await callback.message.edit_text(prompt, reply_markup=_back_kb())
+
+
+@router.message(AdminFlow.promo_value)
+async def receive_promo_value(message: Message, state: FSMContext):
+    """Receive discount value."""
+    try:
+        value = float(message.text.strip())
+        data = await state.get_data()
+        promo_type = data["promo_type"]
+
+        if promo_type == "percent" and (value < 1 or value > 100):
+            await message.answer("❌ Процент должен быть от 1 до 100.")
+            return
+        if promo_type == "fixed" and (value < 1 or value > 10000):
+            await message.answer("❌ Сумма должна быть от 1 до 10000 ₽.")
+            return
+        if promo_type == "days" and (value < 1 or value > 365):
+            await message.answer("❌ Количество дней должно быть от 1 до 365.")
+            return
+
+        await state.update_data(discount_value=value)
+        await state.set_state(AdminFlow.promo_uses)
+        await message.answer(
+            "Введите максимальное количество использований (например: 100 или 999999 для безлимита):",
+            reply_markup=_back_kb()
+        )
+    except ValueError:
+        await message.answer("❌ Введите число.")
+
+
+@router.message(AdminFlow.promo_uses)
+async def receive_promo_uses(message: Message, state: FSMContext):
+    """Receive max uses count."""
+    try:
+        max_uses = int(message.text.strip())
+        if max_uses < 1:
+            await message.answer("❌ Минимальное значение: 1.")
+            return
+
+        await state.update_data(max_uses=max_uses)
+        await state.set_state(AdminFlow.promo_days)
+        await message.answer(
+            "Введите срок действия в днях (например: 30):",
+            reply_markup=_back_kb()
+        )
+    except ValueError:
+        await message.answer("❌ Введите число.")
+
+
+@router.message(AdminFlow.promo_days)
+async def receive_promo_days(message: Message, state: FSMContext):
+    """Receive validity period and create promo code."""
+    try:
+        days = int(message.text.strip())
+        if days < 1 or days > 3650:
+            await message.answer("❌ Количество дней должно быть от 1 до 3650.")
+            return
+
+        data = await state.get_data()
+        code = data["promo_code"]
+        promo_type = data["promo_type"]
+        discount_value = data["discount_value"]
+        max_uses = data["max_uses"]
+
+        success = await create_promo_code(
+            code=code,
+            promo_type=promo_type,
+            discount_value=discount_value,
+            max_uses=max_uses,
+            valid_days=days
+        )
+
+        if success:
+            await log_admin_action(
+                admin_id=message.from_user.id,
+                action_type="create_promo_code",
+                action_details=f"Created promo code {code}, type={promo_type}, value={discount_value}, max_uses={max_uses}, days={days}"
+            )
+            await message.answer(
+                f"✅ Промокод <code>{code}</code> успешно создан!",
+                reply_markup=_main_kb()
+            )
+        else:
+            await message.answer("❌ Ошибка создания промокода.", reply_markup=_back_kb())
+
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите число.")
+
+
 # ── Mass trial distribution ───────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_mass_trial")

@@ -18,6 +18,7 @@ from handlers import (
     guide_router, legal_router, admin_router, auth_router, fallback_router
 )
 from subscription import router as subscription_router
+from webhook import start_webhook_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,12 +67,14 @@ async def main() -> None:
     await bot.delete_webhook(drop_pending_updates=True)
 
     scheduler_task = asyncio.create_task(start_notification_scheduler(bot))
+    webhook_task = asyncio.create_task(start_webhook_server(bot))
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler_task.cancel()
+        webhook_task.cancel()
         await bot.session.close()
         await close_db()
         await close_session()
