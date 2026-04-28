@@ -28,14 +28,20 @@ ENV/
 
 # Environment variables
 .env
+.env.backup
+.env.backup.*
 
 # Database
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # Logs
 *.log
+actions.log
+output.txt
 
 # IDE
 .vscode/
@@ -46,6 +52,13 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test files
+test_*.py
+
+# Windows-specific files
+*.bat
+*.ps1
 
 # Bot specific
 vpnbot.db
