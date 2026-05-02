@@ -112,6 +112,7 @@ async def _send_urgent_notification(bot: Bot, item: dict) -> None:
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Активировать промокод", callback_data=f"activate_promo:{promo_code}")],
         [InlineKeyboardButton(text="🔄 Продлить сейчас", callback_data="buy_vpn")],
         [InlineKeyboardButton(text="🎁 Пригласить друга и получить +5 дней", callback_data="partner")]
     ])
@@ -138,10 +139,11 @@ async def _send_warning_notification(bot: Bot, item: dict) -> None:
         f"• Стабильная скорость работы\n"
         f"• Поддержка всех устройств\n"
         f"• Сэкономьте с промокодом!\n\n"
-        f"� <b>Партнёрская программа:</b> Приглашайте друзей и получайте +5 дней за каждого!"
+        f"🤝 <b>Партнёрская программа:</b> Приглашайте друзей и получайте +5 дней за каждого!"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Активировать промокод", callback_data=f"activate_promo:{promo_code}")],
         [InlineKeyboardButton(text="🔄 Продлить подписку", callback_data="buy_vpn")],
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="partner")]
     ])

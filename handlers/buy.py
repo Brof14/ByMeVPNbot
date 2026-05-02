@@ -9,6 +9,7 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery, LabeledPrice, PreCheckoutQuery, Message,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
 from constants import PRICE_CONFIG, PERIOD_LABELS, TRIAL_DAYS
@@ -307,6 +308,75 @@ async def on_successful_payment(message: Message, bot: Bot, state: FSMContext):
 
 # YooKassa payments are now processed automatically in webhook.py
 # No manual delivery needed anymore
+
+
+# ---------------------------------------------------------------------------
+# Promo Code Callback Handler (for button activation)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("activate_promo:"))
+async def cb_activate_promo(callback: CallbackQuery, state: FSMContext):
+    """Activate promo code via button click."""
+    await safe_answer(callback)
+    
+    # Extract promo code from callback data
+    code = callback.data.split(":", 1)[1].strip().upper()
+    user_id = callback.from_user.id
+
+    # Validate promo code
+    from database import validate_promo_code, use_promo_code
+
+    promo = await validate_promo_code(code)
+    if not promo:
+        await callback.message.edit_text(
+            "❌ <b>Промокод не действителен</b>\n\n"
+            "Возможные причины:\n"
+            "• Код истёк\n"
+            "• Достигнут лимит использований\n"
+            "• Код не существует\n"
+            "• Код не начался ещё",
+            parse_mode="HTML"
+        )
+        return
+
+    # Mark promo code as used
+    success = await use_promo_code(code, user_id)
+    if not success:
+        await callback.message.edit_text(
+            "❌ <b>Вы уже использовали этот промокод</b>\n\n"
+            "Каждый промокод можно использовать только один раз.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Save promo info to state for next purchase
+    promo_type = promo["promo_type"]
+    discount_value = promo["discount_value"]
+
+    if promo_type == "percent":
+        discount_text = f"{discount_value}%"
+    elif promo_type == "fixed_rub":
+        discount_text = f"{discount_value} ₽"
+    elif promo_type == "free_days":
+        discount_text = f"+{discount_value} дней"
+    else:
+        discount_text = f"{discount_value}"
+
+    await state.update_data(promo_info=promo, promo_code=code)
+
+    logger.info(f"Promo code {code} activated via button for user {user_id} with type {promo_type} value {discount_value}")
+
+    await callback.message.edit_text(
+        f"✅ <b>Промокод активирован!</b>\n\n"
+        f"🎁 Код: <code>{code}</code>\n"
+        f"💰 Бонус: <b>{discount_text}</b>\n\n"
+        f"При следующей покупке VPN бонус будет автоматически применён.\n\n"
+        f"👉 Нажмите кнопку ниже для покупки VPN!",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Купить VPN", callback_data="buy_vpn")]
+        ])
+    )
 
 
 # ---------------------------------------------------------------------------

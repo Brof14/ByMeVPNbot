@@ -121,7 +121,7 @@ async def _process_payment(bot: Bot, payment_id: str) -> None:
             return
 
         # Mark as processed BEFORE delivering to prevent race on duplicate webhooks
-        marked = await mark_yookassa_payment_processed(payment_id)
+        marked = await mark_yookassa_processed(payment_id)
         if not marked:
             # Another concurrent task beat us to it
             logger.info("Webhook: payment %s lost idempotency race, skipping", payment_id)
